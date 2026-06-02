@@ -1,5 +1,5 @@
 import { Boot } from './scenes/Boot';
-import { CombatScene } from './scenes/CombatScene';
+import { CombatSceneV2 } from './scenes/CombatSceneV2';
 import { AUTO, Game, Scale } from 'phaser';
 import { Preloader } from './scenes/Preloader';
 
@@ -15,8 +15,13 @@ const config: Phaser.Types.Core.GameConfig = {
         parent: 'game-container',
         fullscreenTarget: 'game-container',
     },
-    scene: [Boot, Preloader, CombatScene],
+    scene: [Boot, Preloader, CombatSceneV2],
 };
+
+let _targetScene = 'CombatScene';
+
+export const setTargetScene = (scene: string) => { _targetScene = scene; };
+export const getTargetScene = () => _targetScene;
 
 const StartGame = (parent: string) => {
     return new Game({ ...config, scale: { ...config.scale as object, parent } });

@@ -5,19 +5,7 @@ export enum MoveType {
     OnAir         = 1,
     ForceGround   = 2,
     ForceAir      = 3,
-    BaseAtkCombo1 = 4,
-    BaseAtkCombo2 = 5,
-    BaseAtkCombo3 = 6,
-    BaseAtkCombo4 = 7,
-    BaseAtkCombo5 = 8,
-    Special1      = 9,
-    Special2      = 10,
-    Special3      = 11,
-    Ultimate      = 12,
-    Buff          = 13,
-    Debuff        = 14,
-    ComboStarter  = 15,
-    ComboEnder    = 16,
+    ComboFinisher = 4,
 }
 
 export enum AttackDirection {
@@ -27,18 +15,33 @@ export enum AttackDirection {
     RIGHT = 3,
 }
 
-// Tuple: [timestamp_ms, direction]
-export type InputStep = readonly [number, AttackDirection];
+// ── Combat effect ─────────────────────────────────────────────────────────────
+
+export abstract class CombatEffect {
+    abstract description: string;
+    apply(_target: ICombatTarget): void {}
+}
+
+// ── Combat target ─────────────────────────────────────────────────────────────
+
+export interface ICombatTarget {
+    damage(amount: number, type: DamageType): number;
+    applyEffect(effect: CombatEffect): void;
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
 
 export class CombatActionInput {
-    readonly inputDuration: number;
-    readonly inputs: readonly InputStep[];
+    readonly waitTillNextInputDuration: number;
+    readonly inputDirection:            AttackDirection;
 
-    constructor(inputDuration: number, inputs: readonly InputStep[]) {
-        this.inputDuration = inputDuration;
-        this.inputs        = inputs;
+    constructor(waitTillNextInputDuration: number, inputDirection: AttackDirection) {
+        this.waitTillNextInputDuration = waitTillNextInputDuration;
+        this.inputDirection            = inputDirection;
     }
 }
+
+// ── Hit / QTE types ───────────────────────────────────────────────────────────
 
 export interface HitInfo {
     damage:     number;
@@ -53,6 +56,61 @@ export interface ActionResult {
     message:    string;
 }
 
+export enum QTEEventType {
+    Parry       = 'Parry',
+    Interrupted = 'Interrupted',
+}
+
+export interface QTEInput {
+    timestamp: number;
+    direction: AttackDirection;
+}
+
+export interface QTEOutcome {
+    type:      QTEEventType | 'None';
+    direction: AttackDirection;
+}
+
+// ── Enemy combat action (V2) ──────────────────────────────────────────────────
+
+export interface EnemyCombatActionConfig {
+    name:      string;
+    animation: string;
+    duration:  number;
+    direction: AttackDirection;
+    damage?:   number;
+}
+
+export class EnemyCombatAction {
+    readonly name:      string;
+    readonly animation: string;
+    readonly duration:  number;
+    readonly direction: AttackDirection;
+    readonly damage:    number;
+
+    constructor(config: EnemyCombatActionConfig) {
+        this.name      = config.name;
+        this.animation = config.animation;
+        this.duration  = config.duration;
+        this.direction = config.direction;
+        this.damage    = config.damage ?? 10;
+    }
+}
+
+// ── Attack multiplier ─────────────────────────────────────────────────────────
+
+export class AttackMultiplier {
+    comboLength:         number = 1;
+    airDamageMultiplier: number = 1;
+    extraDamage:         number = 0;
+
+    get finalMultiplier(): number {
+        return this.comboLength * this.airDamageMultiplier;
+    }
+}
+
+// ── Combat action ─────────────────────────────────────────────────────────────
+
 export interface ActionConfig {
     name:                 string;
     animation:            string;
@@ -61,10 +119,7 @@ export interface ActionConfig {
     damage?:              number;
     damageChainModifier?: number;
     energyCost?:          number;
-    startUpScore?:        number;
-    hitstunScore?:        number;
-    totalScore?:          number;
-    execute?:             (action: CombatAction) => ActionResult;
+    effects?:             CombatEffect[];
 }
 
 export class CombatAction {
@@ -76,11 +131,7 @@ export class CombatAction {
     damage:              number;
     damageChainModifier: number;
     energyCost:          number;
-    startUpScore:        number;
-    hitstunScore:        number;
-    totalScore:          number;
-
-    private readonly _execute?: (action: CombatAction) => ActionResult;
+    effects:             CombatEffect[];
 
     constructor(config: ActionConfig) {
         this.name                = config.name;
@@ -89,20 +140,42 @@ export class CombatAction {
         this.moveTypes           = config.moveTypes           ?? [];
         this.damage              = config.damage              ?? 8;
         this.damageChainModifier = config.damageChainModifier ?? 1.1;
-        this.energyCost          = config.energyCost          ?? 8;
-        this.startUpScore        = config.startUpScore        ?? 10;
-        this.hitstunScore        = config.hitstunScore        ?? 10;
-        this.totalScore          = config.totalScore          ?? (this.startUpScore + this.hitstunScore);
-        this._execute            = config.execute;
+        this.energyCost          = config.energyCost          ?? 1;
+        this.effects             = config.effects             ?? [];
     }
 
-    execute(): ActionResult {
-        if (this._execute) return this._execute(this);
-        return {
-            type:      'attack',
-            animation: this.animation,
-            hits:      [{ damage: this.damage, direction: AttackDirection.RIGHT, damageType: DamageType.PHYSICAL }],
-            message:   `${this.name}!`,
-        };
+    execute(target: ICombatTarget, multiplier = new AttackMultiplier()): number {
+        const dealt = target.damage(Math.round(this.damage * multiplier.finalMultiplier + multiplier.extraDamage), DamageType.PHYSICAL);
+        for (const effect of this.effects) {
+            effect.apply(target);
+        }
+        return dealt;
+    }
+}
+
+export class CombatSpecialAction extends CombatAction {
+    constructor(config: Omit<ActionConfig, 'energyCost'>) {
+        super({ ...config, energyCost: 0 });
+    }
+}
+
+// ── Dancer combat actions ─────────────────────────────────────────────────────
+
+export interface DancerActionConfig extends ActionConfig {
+    baseRating?: number;
+}
+
+export class DancerCombatAction extends CombatAction {
+    readonly baseRating: number;
+
+    constructor(config: DancerActionConfig) {
+        super(config);
+        this.baseRating = config.baseRating ?? 1;
+    }
+}
+
+export class DancerCombatSpecialAction extends DancerCombatAction {
+    constructor(config: Omit<DancerActionConfig, 'energyCost'>) {
+        super({ ...config, energyCost: 0 });
     }
 }

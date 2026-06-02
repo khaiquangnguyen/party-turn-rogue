@@ -3,8 +3,9 @@
 export const GAME_W = 3840;
 export const GAME_H = 2160;
 
-export const QTE_DURATION    = 800;  // ms per hit
-export const QTE_PARRY_START = 600;  // ms — parry window opens at this point
+export const QTE_DURATION    = 800;  // ms per hit (V1)
+export const QTE_PARRY_START = 600;  // ms — parry window opens at this point (V1)
+export const QTE_PARRY_WINDOW = 200; // ms tolerance around the expected input direction timestamp (V2)
 export const QTE_MAX_RADIUS  = 320;  // logical px
 export const QTE_INNER_RADIUS = 80;  // logical px (fixed parry-sweet-spot ring)
 

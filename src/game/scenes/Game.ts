@@ -1,4 +1,5 @@
 import { EventBus } from '../EventBus';
+import { Events } from '../Events';
 import { Scene } from 'phaser';
 
 export class Game extends Scene
@@ -26,7 +27,7 @@ export class Game extends Scene
             align: 'center'
         }).setOrigin(0.5).setDepth(100);
 
-        EventBus.emit('current-scene-ready', this);
+        EventBus.emit(Events.CURRENT_SCENE_READY, this);
     }
 
     changeScene ()

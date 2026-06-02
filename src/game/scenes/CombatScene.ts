@@ -1,9 +1,11 @@
 import { Scene, GameObjects } from 'phaser';
 import { EventBus } from '../EventBus';
+import { Events } from '../Events';
 import { GameData } from '../GameData';
-import { PlayableCharacter } from '../entities/PlayableCharacter';
+import { TheGrandDancer } from '../../characters/GrandDancer/TheGrandDancer.ts';
 import { DemonSoldier, AttackDirection, HitInfo } from '../entities/DemonSoldier';
 import { DamageType } from '../entities/CharacterState';
+import { CombatScenePlayableCharacter, CombatSceneEnemyCharacter } from '../entities/CombatSceneCharacter';
 import { PLAYER_ANIM_FRAMES } from './Preloader';
 import {
     GAME_W as W, GAME_H as H,
@@ -12,25 +14,17 @@ import {
 
 // ─── Layout (4K 3840×2160) ───────────────────────────────────────────────────
 const MID      = W / 2;
-const PLAYER_X = MID / 2;       // 960  — spawn / idle position
-const ENEMY_X  = MID + MID / 2; // 2880 — spawn / idle position
+const PLAYER_X = MID / 2;
+const ENEMY_X  = MID + MID / 2;
 const GROUND_Y = H * 0.8;
 const CHAR_Y   = GROUND_Y - 300;
 
-// Combat-ready positions (both chars approach middle at turn start)
-const PLAYER_COMBAT_X = MID - 550;  // 1370
-const ENEMY_COMBAT_X  = MID + 550;  // 2470
+const PLAYER_COMBAT_X = MID - 550;
+const ENEMY_COMBAT_X  = MID + 550;
+const PLAYER_ATTACK_X = MID + 200;
+const ATTACK_X        = MID - 200;
 
-// Attack dash targets (each char lunges past centre)
-const PLAYER_ATTACK_X = MID + 200;  // 2120 — player dashes toward enemy
-const ATTACK_X        = MID - 200;  // 1720 — enemy rushes toward player
-
-// ─── Colours ─────────────────────────────────────────────────────────────────
-const C = {
-    blue:  '#1155bb',
-    red:   '#bb1111',
-    white: '#ffffff',
-};
+const C = { blue: '#1155bb', red: '#bb1111', white: '#ffffff' };
 
 type TurnOwner  = 'player' | 'enemy';
 type QTEOutcome = 'parry' | 'none';
@@ -54,64 +48,56 @@ const DIR_ANIM: Record<AttackDirection, string> = {
     [AttackDirection.RIGHT]: 'ds-flame3-anim',
 };
 
-// Non-action player animation keys used by the scene directly
 const PA = {
-    idle:         'player-idle-anim',
-    standingSlash:'player-standingSlash-anim', // used for counter-attack
-    hit:          'player-hit-anim',
-    guard:        'player-guard-anim',
+    idle:          'player-idle-anim',
+    standingSlash: 'player-standingSlash-anim',
+    hit:           'player-hit-anim',
+    guard:         'player-guard-anim',
 } as const;
 
 export interface CombatState {
-    playerName:    string;
-    playerSpeed:   number;
-    playerHP:      number;
-    playerMaxHP:   number;
-    playerEN:      number;
-    playerMaxEN:   number;
-    enemyName:     string;
-    enemyType:     string;
-    enemyLevel:    number;
-    enemySpeed:    number;
-    enemyHP:       number;
-    enemyMaxHP:    number;
-    currentTurn:   'player' | 'enemy';
+    playerName:     string;
+    playerSpeed:    number;
+    playerHP:       number;
+    playerMaxHP:    number;
+    playerEN:       number;
+    playerMaxEN:    number;
+    enemyName:      string;
+    enemyType:      string;
+    enemyLevel:     number;
+    enemySpeed:     number;
+    enemyHP:        number;
+    enemyMaxHP:     number;
+    currentTurn:    'player' | 'enemy';
     buttonsEnabled: boolean;
-    combatLog:     string;
-    combatResult?: 'victory' | 'defeat';
+    combatLog:      string;
+    combatResult?:  'victory' | 'defeat';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-
 export class CombatScene extends Scene {
-    private player!: PlayableCharacter;
-    private enemy!:  DemonSoldier;
+    private player!: CombatScenePlayableCharacter;
+    private enemy!:  CombatSceneEnemyCharacter;
 
     private playerContainer!: GameObjects.Container;
     private playerSprite!:    GameObjects.Sprite;
     private enemySprite!:     GameObjects.Sprite;
 
-    // QTE state (no Phaser visuals — React renders the circle)
     private qteActive    = false;
     private qteResolved  = false;
     private qteStartTime = 0;
     private qteDirection: AttackDirection | null = null;
 
-    // Multi-hit sequence
     private pendingHits:   HitInfo[] = [];
     private pendingHitIdx  = 0;
     private pendingMsg     = '';
 
-    // Parry tracking
     private comboParriedCount = 0;
     private comboTotalHits    = 0;
 
-    // Turn
-    private currentTurn:      TurnOwner = 'player';
-    private isAnimating       = false;
-    private combatApproached  = false;
+    private currentTurn:     TurnOwner = 'player';
+    private isAnimating      = false;
+    private combatApproached = false;
 
-    // React bridge
     private combatLogText = '';
 
     constructor() { super('CombatScene'); }
@@ -119,9 +105,9 @@ export class CombatScene extends Scene {
     // ─── Lifecycle ───────────────────────────────────────────────────────────
 
     create(): void {
-        const selected = GameData.getSelectedCharacter();
-        this.player = selected ?? new PlayableCharacter();
-        this.enemy = new DemonSoldier();
+        const selectedTemplate = GameData.getSelectedCharacter();
+        this.player = CombatScenePlayableCharacter.createLegacy(selectedTemplate ?? new TheGrandDancer());
+        this.enemy  = new CombatSceneEnemyCharacter(new DemonSoldier());
 
         this.createBackground();
         this.createEnemyAnimations();
@@ -132,15 +118,15 @@ export class CombatScene extends Scene {
 
         const onComboHit  = ({ actionName }: { actionName: string }) => this.onComboActionHit(actionName);
         const onComboDone = () => this.onComboDone();
-        EventBus.on('player-combo-action-hit', onComboHit);
-        EventBus.on('player-combo-done',       onComboDone);
+        EventBus.on(Events.PLAYER_COMBO_ACTION_HIT, onComboHit);
+        EventBus.on(Events.PLAYER_COMBO_DONE,       onComboDone);
         this.events.once('shutdown', () => {
-            EventBus.off('player-combo-action-hit', onComboHit);
-            EventBus.off('player-combo-done',       onComboDone);
+            EventBus.off(Events.PLAYER_COMBO_ACTION_HIT, onComboHit);
+            EventBus.off(Events.PLAYER_COMBO_DONE,       onComboDone);
         });
 
         this.determineTurnOrder();
-        EventBus.emit('current-scene-ready', this);
+        EventBus.emit(Events.CURRENT_SCENE_READY, this);
     }
 
     // ─── Background ──────────────────────────────────────────────────────────
@@ -181,7 +167,6 @@ export class CombatScene extends Scene {
             guard: { rate:  8, loop: false },
         };
         const defaults = { rate: 14, loop: false };
-
         for (const [animKey, frames] of Object.entries(PLAYER_ANIM_FRAMES)) {
             const key = `player-${animKey}-anim`;
             if (this.anims.exists(key)) continue;
@@ -198,15 +183,8 @@ export class CombatScene extends Scene {
     // ─── Visuals ─────────────────────────────────────────────────────────────
 
     private createPlayerVisual(): void {
-        const scale = 14;
-
         this.add.ellipse(PLAYER_X, GROUND_Y, 200, 40, 0x000000, 0.10);
-
-        this.playerSprite = this.add.sprite(0, 0, 'player-idle-0')
-            .setOrigin(0.5, 1)
-            .setScale(scale);
-
-        // Container anchored at feet — move this for attack tweens
+        this.playerSprite = this.add.sprite(0, 0, 'player-idle-0').setOrigin(0.5, 1).setScale(14);
         this.playerContainer = this.add.container(PLAYER_X, GROUND_Y, [this.playerSprite]);
         this.playerSprite.play(PA.idle);
     }
@@ -229,13 +207,12 @@ export class CombatScene extends Scene {
 
     private onQTEKey(key: 'w' | 'a' | 's' | 'd'): void {
         if (!this.qteActive || this.qteResolved) return;
-        const inWindow = (this.time.now - this.qteStartTime) >= QTE_PARRY_START;
-        if (!inWindow) return;
+        if ((this.time.now - this.qteStartTime) < QTE_PARRY_START) return;
         const map: Record<string, AttackDirection> = { w: AttackDirection.UP, s: AttackDirection.DOWN, a: AttackDirection.LEFT, d: AttackDirection.RIGHT };
         if (map[key] === this.qteDirection) this.resolveQTE('parry');
     }
 
-    // ─── QTE core — visuals are now in React ─────────────────────────────────
+    // ─── QTE ─────────────────────────────────────────────────────────────────
 
     private startHit(hit: HitInfo, hitIdx: number, totalHits: number): void {
         this.enemySprite.play(DIR_ANIM[hit.direction]);
@@ -250,7 +227,7 @@ export class CombatScene extends Scene {
             if (!this.qteResolved) this.resolveQTE('none');
         });
 
-        EventBus.emit('combat-qte-start', {
+        EventBus.emit(Events.COMBAT_QTE_START, {
             normX:     this.enemySprite.x / W,
             direction: hit.direction,
             hitIndex:  hitIdx,
@@ -263,14 +240,14 @@ export class CombatScene extends Scene {
         this.qteResolved = true;
         this.qteActive   = false;
 
-        EventBus.emit('combat-qte-end');
+        EventBus.emit(Events.COMBAT_QTE_END);
 
         if (outcome === 'none') {
             this.comboParriedCount = 0;
         } else {
             this.cameras.main.shake(100, 0.008);
             this.comboParriedCount++;
-            if (this.comboParriedCount >= this.player.interruptThreshold) {
+            if (this.comboParriedCount >= this.player.template.interruptThreshold) {
                 this.applyHit(this.pendingHits[this.pendingHitIdx], outcome, this.pendingHitIdx, this.pendingHits.length);
                 this.interruptEnemyTurn();
                 return;
@@ -297,7 +274,6 @@ export class CombatScene extends Scene {
 
     private applyHit(hit: HitInfo, outcome: QTEOutcome, idx: number, total: number): boolean {
         const popY = CHAR_Y - 380;
-
         if (outcome === 'parry') {
             this.spawnFloatingText(PLAYER_X, popY, 'PARRY!', '#ffcc00', '140px');
             this.flashSprite(this.playerSprite, 0xffcc00);
@@ -306,30 +282,28 @@ export class CombatScene extends Scene {
             return true;
         }
 
-        const result = this.player.damage(hit.damage, DamageType.TRUE);
-        this.emitCombatState(`${this.pendingMsg} — Hit ${idx + 1}/${total} — ${result.finalDamage} dmg`);
+        const dealt = this.player.damage(hit.damage, DamageType.TRUE);
+        this.emitCombatState(`${this.pendingMsg} — Hit ${idx + 1}/${total} — ${dealt} dmg`);
 
         this.playerSprite.play(PA.hit);
         this.playerSprite.once('animationcomplete', () => {
-            if (this.player.isAlive()) this.playerSprite.play(PA.idle);
+            if (this.player.isAlive) this.playerSprite.play(PA.idle);
         });
-
         this.flashSprite(this.playerSprite, 0xff4444);
-        this.spawnDamageNumber(PLAYER_X + (idx % 2 === 0 ? -80 : 80), CHAR_Y - 300 - idx * 50, result.finalDamage);
+        this.spawnDamageNumber(PLAYER_X + (idx % 2 === 0 ? -80 : 80), CHAR_Y - 300 - idx * 50, dealt);
+        if (dealt > 0) this.cameras.main.shake(80, 0.005);
 
-        if (result.finalDamage > 0) this.cameras.main.shake(80, 0.005);
-
-        if (this.player.isDead()) { this.time.delayedCall(400, () => this.onPlayerDied()); return false; }
+        if (this.player.isDead) { this.time.delayedCall(400, () => this.onPlayerDied()); return false; }
         return true;
     }
 
     // ─── Turn system ─────────────────────────────────────────────────────────
 
     private determineTurnOrder(): void {
-        const ps = this.player.getStats().speed;
-        const es = this.enemy.getStats().speed;
+        const ps = this.player.speed;
+        const es = this.enemy.speed;
         this.currentTurn = ps >= es ? 'player' : 'enemy';
-        const first = this.currentTurn === 'player' ? this.player.getName() : this.enemy.getName();
+        const first = this.currentTurn === 'player' ? this.player.template.getName() : this.enemy.template.getName();
         const spd   = this.currentTurn === 'player' ? ps : es;
         if (this.currentTurn === 'enemy') this.isAnimating = true;
         this.emitCombatState(`Combat starts!  ${first} goes first  (SPD ${spd}).`);
@@ -367,11 +341,11 @@ export class CombatScene extends Scene {
         });
     }
 
-    // ─── Combo action hit (from React timing overlay) ────────────────────────
+    // ─── Combo action hit ─────────────────────────────────────────────────────
 
     private onComboActionHit(actionName: string): void {
         if (this.currentTurn !== 'player') return;
-        const action = this.player.getAction(actionName);
+        const action = this.player.template.getAction(actionName);
         if (!action) return;
 
         const phaserAnimKey = `player-${action.animation}-anim`;
@@ -381,29 +355,23 @@ export class CombatScene extends Scene {
                 targets: this.playerContainer,
                 x: PLAYER_ATTACK_X, duration: 140, ease: 'Quad.easeIn',
                 onComplete: () => {
-                    this.player.getEnergyManager().consume(action.energyCost);
-                    const result = this.enemy.damage(action.damage, DamageType.TRUE);
+                    this.player.energyManager.consume(action.energyCost);
+                    const dealt = this.enemy.damage(action.damage, DamageType.TRUE);
 
                     this.playerSprite.play(phaserAnimKey);
                     this.playerSprite.once('animationcomplete', () => {
-                        if (this.player.isAlive()) this.playerSprite.play(PA.idle);
+                        if (this.player.isAlive) this.playerSprite.play(PA.idle);
                     });
 
                     this.flashSprite(this.enemySprite, 0xff4444);
                     this.shakeSprite(this.enemySprite);
-                    this.spawnDamageNumber(ENEMY_COMBAT_X, CHAR_Y - 300, result.finalDamage);
+                    this.spawnDamageNumber(ENEMY_COMBAT_X, CHAR_Y - 300, dealt);
                     this.cameras.main.shake(120, 0.008);
+                    this.emitCombatState(`${actionName}! ${dealt} dmg.`);
 
-                    this.emitCombatState(`${actionName}! ${result.finalDamage} dmg.`);
+                    if (this.enemy.isDead) this.time.delayedCall(300, () => this.onEnemyDied());
 
-                    if (this.enemy.isDead()) {
-                        this.time.delayedCall(300, () => this.onEnemyDied());
-                    }
-
-                    this.tweens.add({
-                        targets: this.playerContainer,
-                        x: PLAYER_COMBAT_X, duration: 200, ease: 'Quad.easeOut',
-                    });
+                    this.tweens.add({ targets: this.playerContainer, x: PLAYER_COMBAT_X, duration: 200, ease: 'Quad.easeOut' });
                 },
             });
         };
@@ -411,31 +379,25 @@ export class CombatScene extends Scene {
         if (!this.combatApproached) {
             this.combatApproached = true;
             this.tweens.add({ targets: this.enemySprite, x: ENEMY_COMBAT_X, duration: 400, ease: 'Quad.easeOut' });
-            this.tweens.add({
-                targets: this.playerContainer,
-                x: PLAYER_COMBAT_X, duration: 400, ease: 'Quad.easeOut',
-                onComplete: doAttack,
-            });
+            this.tweens.add({ targets: this.playerContainer, x: PLAYER_COMBAT_X, duration: 400, ease: 'Quad.easeOut', onComplete: doAttack });
         } else {
             doAttack();
         }
     }
-
-    // ─── Combo done (React signals all bars finished) ────────────────────────
 
     private onComboDone(): void {
         if (this.currentTurn !== 'player') return;
         this.endPlayerTurn();
     }
 
-    // ─── Enemy turn ──────────────────────────────────────────────────────────
+    // ─── Enemy turn ───────────────────────────────────────────────────────────
 
     private executeEnemyTurn(): void {
-        if (!this.enemy.isAlive()) return;
+        if (!this.enemy.isAlive) return;
         this.isAnimating = true;
 
-        const action = this.enemy.chooseAction();
-        const result = action.execute();
+        const action = this.enemy.template.chooseAction();
+        const result = (this.enemy.template as DemonSoldier).buildActionResult(action);
 
         this.pendingHits       = result.hits;
         this.pendingHitIdx     = 0;
@@ -444,10 +406,10 @@ export class CombatScene extends Scene {
         this.comboTotalHits    = result.hits.length;
 
         this.spawnFloatingText(MID, CHAR_Y - 200, 'ENEMY TURN', '#ff5544', '160px');
-        this.emitCombatState(`${this.enemy.getName()} is preparing to attack...`);
+        this.emitCombatState(`${this.enemy.template.getName()} is preparing to attack...`);
 
         this.time.delayedCall(1000, () => {
-            this.emitCombatState(`${this.enemy.getName()} uses ${action.name}!`);
+            this.emitCombatState(`${this.enemy.template.getName()} uses ${action.name}!`);
             this.tweens.add({ targets: this.playerContainer, x: PLAYER_COMBAT_X, duration: 500, ease: 'Quad.easeOut' });
             this.tweens.add({
                 targets: this.enemySprite,
@@ -467,8 +429,6 @@ export class CombatScene extends Scene {
         });
     }
 
-    // ─── Interrupt (threshold parries mid-combo) ──────────────────────────────
-
     private interruptEnemyTurn(): void {
         this.pendingHits = [];
         this.spawnFloatingText(MID, CHAR_Y - 400, 'INTERRUPTED!', '#ffcc00', '150px');
@@ -476,28 +436,23 @@ export class CombatScene extends Scene {
         this.time.delayedCall(200, () => this.triggerCounterAttack());
     }
 
-    // ─── Full-parry counter ───────────────────────────────────────────────────
-
     private triggerCounterAttack(): void {
         this.emitCombatState('PERFECT PARRY!  Launching counter!');
         this.spawnFloatingText(PLAYER_X, CHAR_Y - 620, 'FULL PARRY! COUNTER!', '#ffcc00', '130px');
-
         this.playerSprite.play(PA.standingSlash);
-
         this.tweens.add({
             targets: this.playerContainer,
             x: PLAYER_ATTACK_X, duration: 200, ease: 'Quad.easeIn',
             onComplete: () => {
-                const dmg = 30;
-                this.enemy.damage(dmg, DamageType.TRUE);
-                this.emitCombatState(`Counter strike! ${dmg} true damage!`);
+                const dealt = this.enemy.damage(30, DamageType.TRUE);
+                this.emitCombatState(`Counter strike! ${dealt} true damage!`);
                 this.cameras.main.shake(140, 0.012);
                 this.shakeSprite(this.enemySprite);
                 this.enemySprite.setTintFill(0xff4444);
                 this.time.delayedCall(150, () => this.enemySprite.clearTint());
-                this.spawnDamageNumber(this.enemySprite.x, CHAR_Y - 300, dmg);
+                this.spawnDamageNumber(this.enemySprite.x, CHAR_Y - 300, dealt);
 
-                const enemyDied = this.enemy.isDead();
+                const enemyDied = this.enemy.isDead;
                 this.tweens.add({ targets: this.enemySprite, x: ENEMY_X, duration: 450, ease: 'Quad.easeOut' });
                 this.tweens.add({
                     targets: this.playerContainer,
@@ -519,43 +474,38 @@ export class CombatScene extends Scene {
 
     private onEnemyDied(): void {
         this.enemySprite.play('ds-death-anim');
-        this.emitCombatState(`${this.enemy.getName()} has been defeated!`, 'victory');
+        this.emitCombatState(`${this.enemy.template.getName()} has been defeated!`, 'victory');
         this.tweens.add({ targets: this.playerContainer, x: PLAYER_X, duration: 700, ease: 'Quad.easeOut' });
-        this.time.delayedCall(2500, () => EventBus.emit('combat-ended', { result: 'victory' }));
+        this.time.delayedCall(2500, () => EventBus.emit(Events.COMBAT_ENDED, { result: 'victory' }));
     }
 
     private onPlayerDied(): void {
-        this.tweens.add({
-            targets: this.playerContainer,
-            alpha: 0, y: GROUND_Y + 80, duration: 700,
-        });
+        this.tweens.add({ targets: this.playerContainer, alpha: 0, y: GROUND_Y + 80, duration: 700 });
         this.tweens.add({ targets: this.enemySprite, x: ENEMY_X, duration: 700, ease: 'Quad.easeOut' });
-        this.emitCombatState(`${this.player.getName()} has fallen!`, 'defeat');
-        this.time.delayedCall(2500, () => EventBus.emit('combat-ended', { result: 'defeat' }));
+        this.emitCombatState(`${this.player.template.getName()} has fallen!`, 'defeat');
+        this.time.delayedCall(2500, () => EventBus.emit(Events.COMBAT_ENDED, { result: 'defeat' }));
     }
-
-
 
     // ─── React bridge ────────────────────────────────────────────────────────
 
     private emitCombatState(log?: string, combatResult?: 'victory' | 'defeat'): void {
         if (log !== undefined) this.combatLogText = log;
 
-        const ph = this.player.getHealthManager();
-        const pe = this.player.getEnergyManager();
-        const eh = this.enemy.getHealthManager();
+        const ph = this.player.healthManager;
+        const pe = this.player.energyManager;
+        const eh = this.enemy.healthManager;
 
         const state: CombatState = {
-            playerName:     this.player.getName(),
-            playerSpeed:    this.player.getStats().speed,
+            playerName:     this.player.template.getName(),
+            playerSpeed:    this.player.speed,
             playerHP:       ph.getCurrentHealth(),
             playerMaxHP:    ph.getMaxHealth(),
             playerEN:       pe.getCurrentEnergy(),
             playerMaxEN:    pe.getMaxEnergy(),
-            enemyName:      this.enemy.getName(),
-            enemyType:      this.enemy.getEnemyType(),
-            enemyLevel:     this.enemy.getLevel(),
-            enemySpeed:     this.enemy.getStats().speed,
+            enemyName:      this.enemy.template.getName(),
+            enemyType:      this.enemy.template.getEnemyType(),
+            enemyLevel:     this.enemy.template.getLevel(),
+            enemySpeed:     this.enemy.speed,
             enemyHP:        eh.getCurrentHealth(),
             enemyMaxHP:     eh.getMaxHealth(),
             currentTurn:    this.currentTurn,
@@ -564,7 +514,7 @@ export class CombatScene extends Scene {
             combatResult,
         };
 
-        EventBus.emit('combat-update', state);
+        EventBus.emit(Events.COMBAT_UPDATE, state);
     }
 
     // ─── FX ──────────────────────────────────────────────────────────────────

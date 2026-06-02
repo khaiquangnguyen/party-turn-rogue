@@ -1,10 +1,11 @@
 import { EnemyCharacter, EnemyType } from './EnemyCharacter';
+import { AttackDirection, HitInfo, ActionResult, CombatAction, CombatActionInput, EnemyCombatAction } from './CombatTypes';
 import { DamageType } from './CharacterState';
-import { AttackDirection, HitInfo, ActionResult, CombatAction } from './CombatTypes';
 
 export { AttackDirection };
 export type { HitInfo, ActionResult, CombatAction };
 
+// V1 helper — builds a list of hits for the legacy QTE combat scene.
 function makeHits(count: number, damage: number, dir?: AttackDirection): HitInfo[] {
     const dirs = [AttackDirection.UP, AttackDirection.DOWN, AttackDirection.LEFT, AttackDirection.RIGHT];
     return Array.from({ length: count }, () => ({
@@ -15,18 +16,20 @@ function makeHits(count: number, damage: number, dir?: AttackDirection): HitInfo
 }
 
 export class DemonSoldier extends EnemyCharacter {
+    readonly idleAnimKey   = 'ds-idle-anim';
+    readonly hitAnimKey    = 'ds-hurt-anim';
+    readonly deathAnimKey  = 'ds-death-anim';
+    readonly defendAnimKey = 'ds-defend-anim';
+
     readonly actions: CombatAction[];
 
     constructor() {
         super({
             name:             'Demon Soldier',
             enemyType:        EnemyType.ELITE,
-            maxHealth:        120,
+            maxHealth:        240,
             maxEnergy:        80,
             defense:          12,
-            magicResistance:  8,
-            parryChance:      0.05,
-            blockReduction:   0.5,
             speed:            8,
             level:            1,
             experienceReward: 50,
@@ -39,53 +42,95 @@ export class DemonSoldier extends EnemyCharacter {
         return [
             new CombatAction({
                 name:      'Strike',
-                animation: '',
+                animation: 'ds-attack1',
                 damage:    10,
-                execute:   (a) => ({
-                    type:    'attack',
-                    hits:    makeHits(Math.floor(Math.random() * 3) + 3, a.damage),
-                    message: 'Demon Soldier launches a flurry of strikes!',
-                }),
+                input:     new CombatActionInput(1200, AttackDirection.RIGHT),
             }),
             new CombatAction({
                 name:      'Heavy Blow',
-                animation: '',
+                animation: 'ds-attack2',
                 damage:    14,
-                execute:   (a) => ({
-                    type:    'attack',
-                    hits:    makeHits(Math.floor(Math.random() * 3) + 3, a.damage),
-                    message: 'Demon Soldier delivers heavy blows!',
-                }),
+                input:     new CombatActionInput(1400, AttackDirection.DOWN),
             }),
             new CombatAction({
-                name:      'Triple Slash',
-                animation: '',
+                name:      'Quick Slash',
+                animation: 'ds-attack3',
                 damage:    8,
-                execute:   (a) => ({
-                    type:    'attack',
-                    hits:    makeHits(3, a.damage),
-                    message: 'Demon Soldier slashes three times!',
-                }),
+                input:     new CombatActionInput(900, AttackDirection.UP),
             }),
             new CombatAction({
-                name:      'Aerial Assault',
-                animation: '',
+                name:      'Side Swipe',
+                animation: 'ds-attack4',
                 damage:    12,
-                execute:   (a) => ({
-                    type:    'attack',
-                    hits:    makeHits(Math.floor(Math.random() * 2) + 3, a.damage, AttackDirection.DOWN),
-                    message: 'Demon Soldier rains blows from above!',
-                }),
+                input:     new CombatActionInput(1100, AttackDirection.LEFT),
             }),
         ];
     }
 
+    // V1: builds a result for the legacy QTE scene from a chosen action.
+    buildActionResult(action: CombatAction): ActionResult {
+        switch (action.name) {
+            case 'Strike':
+                return {
+                    type:    'attack',
+                    hits:    makeHits(Math.floor(Math.random() * 3) + 3, action.damage),
+                    message: 'Demon Soldier launches a flurry of strikes!',
+                };
+            case 'Heavy Blow':
+                return {
+                    type:    'attack',
+                    hits:    makeHits(Math.floor(Math.random() * 3) + 3, action.damage),
+                    message: 'Demon Soldier delivers heavy blows!',
+                };
+            case 'Quick Slash':
+                return {
+                    type:    'attack',
+                    hits:    makeHits(3, action.damage),
+                    message: 'Demon Soldier slashes quickly!',
+                };
+            default:
+                return {
+                    type:    'attack',
+                    hits:    makeHits(Math.floor(Math.random() * 2) + 3, action.damage, AttackDirection.DOWN),
+                    message: 'Demon Soldier rains blows from above!',
+                };
+        }
+    }
+
+    // V1: returns a single action for the legacy QTE scene.
     chooseAction(): CombatAction {
         const r = Math.random();
         if (r < 0.35) return this.actions[0]; // Strike
         if (r < 0.60) return this.actions[1]; // Heavy Blow
-        if (r < 0.80) return this.actions[2]; // Triple Slash
-        return this.actions[3];               // Aerial Assault
+        if (r < 0.80) return this.actions[2]; // Quick Slash
+        return this.actions[3];               // Side Swipe
+    }
+
+    chooseTarget<T extends { isAlive: boolean }>(players: T[]): T | null {
+        const alive = players.filter(p => p.isAlive);
+        if (alive.length === 0) return null;
+        return alive[Math.floor(Math.random() * alive.length)];
+    }
+
+    chooseAttackSequence(): EnemyCombatAction[] {
+        const R = AttackDirection.RIGHT;
+        const U = AttackDirection.UP;
+        const D = AttackDirection.DOWN;
+        const L = AttackDirection.LEFT;
+        const r = Math.random();
+        if (r < 0.35) return [
+            new EnemyCombatAction({ name: 'Quick Slash', animation: 'ds-attack3', duration:  900, direction: U, damage:  8 }),
+            new EnemyCombatAction({ name: 'Strike',      animation: 'ds-attack1', duration: 1200, direction: R, damage: 10 }),
+        ];
+        if (r < 0.65) return [
+            new EnemyCombatAction({ name: 'Side Swipe',  animation: 'ds-attack4', duration: 1100, direction: L, damage: 12 }),
+            new EnemyCombatAction({ name: 'Heavy Blow',  animation: 'ds-attack2', duration: 1400, direction: D, damage: 14 }),
+        ];
+        return [
+            new EnemyCombatAction({ name: 'Quick Slash', animation: 'ds-attack3', duration:  900, direction: U, damage:  8 }),
+            new EnemyCombatAction({ name: 'Strike',      animation: 'ds-attack1', duration: 1200, direction: R, damage: 10 }),
+            new EnemyCombatAction({ name: 'Side Swipe',  animation: 'ds-attack4', duration: 1100, direction: L, damage: 12 }),
+        ];
     }
 
     getInfo(): string { return `${this.getName()} (Lv.${this.getLevel()} ${this.getEnemyType()})`; }

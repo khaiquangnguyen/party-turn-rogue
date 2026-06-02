@@ -1,4 +1,4 @@
-import { Character, CharacterConfig } from './Character';
+import { CharacterTemplate, CharacterConfig } from './CharacterTemplate';
 import { CombatAction } from './CombatTypes';
 import { actionStore } from '../../data/ActionStore';
 
@@ -8,24 +8,28 @@ export interface PlayableCharacterConfig extends CharacterConfig {
     interruptThreshold?: number;
 }
 
-export class PlayableCharacter extends Character {
-    readonly spritePath: string = PLAYER_SPRITE_PATH;
-    readonly actions: CombatAction[];
+export abstract class PlayableCharacter extends CharacterTemplate {
+    abstract readonly idleAnimKey:          string;
+    abstract readonly hitAnimKey:           string;
+    abstract readonly deathAnimKey:         string;
+    abstract readonly defendAnimKey:        string;
+    abstract readonly counterAttackAnimKey: string;
+    abstract readonly spritePath:           string;
+
+    readonly actions:            CombatAction[];
     readonly interruptThreshold: number;
 
     constructor(config?: Partial<PlayableCharacterConfig>) {
         super({
-            name:            'Player',
-            maxHealth:       100,
-            maxEnergy:       60,
-            defense:         10,
-            magicResistance: 5,
-            parryChance:     0.10,
-            blockReduction:  0.5,
-            speed:           12,
+            name:      'Player',
+            maxHealth: 100,
+            maxEnergy: 60,
+            defense:   10,
+            speed:     12,
+            attack:    10,
             ...config,
         });
-        this.actions = actionStore.createActions();
+        this.actions            = actionStore.createActions();
         this.interruptThreshold = config?.interruptThreshold ?? 4;
     }
 
@@ -33,7 +37,5 @@ export class PlayableCharacter extends Character {
         return this.actions.find(a => a.name === name);
     }
 
-    getInfo(): string {
-        return this.getName();
-    }
+    getInfo(): string { return this.getName(); }
 }
