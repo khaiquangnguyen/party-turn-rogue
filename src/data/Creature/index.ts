@@ -1,0 +1,10 @@
+export { SupportPassive, NoEnergyConsumeChance, AirLightningStrike, SpeedIncrease } from './SupportPassive.ts';
+export { Need                                                                        } from './Need.ts';
+export { FoodNeed                                                                    } from './FoodNeed.ts';
+export { Food, EdibleLightning, EdibleCloud                                          } from './Food.ts';
+export { CreatureTemplate                                                            } from './CreatureTemplate.ts';
+export type { Gender                                                                 } from './CreatureTemplate.ts';
+export { AliveCreature                                                               } from './AliveCreature.ts';
+export { CloudSheep                                                                  } from './creatures/CloudSheep.ts';
+export { ThunderBird                                                                 } from './creatures/ThunderBird.ts';
+export { FloatingTurtle                                                              } from './creatures/FloatingTurtle.ts';

@@ -27,7 +27,7 @@ export class DemonSoldier extends EnemyCharacter {
         super({
             name:             'Demon Soldier',
             enemyType:        EnemyType.ELITE,
-            maxHealth:        240,
+            maxHealth:        50,
             maxEnergy:        80,
             defense:          12,
             speed:            8,
@@ -134,4 +134,32 @@ export class DemonSoldier extends EnemyCharacter {
     }
 
     getInfo(): string { return `${this.getName()} (Lv.${this.getLevel()} ${this.getEnemyType()})`; }
+}
+
+export class BossDemonSoldier extends DemonSoldier {
+    constructor() {
+        super();
+        // Double max HP.
+        Object.defineProperty(this, 'maxHealth', { value: 100, writable: false, configurable: true });
+        // Double each action's base damage.
+        for (const action of this.actions) {
+            Object.defineProperty(action, 'damage', { value: action.damage * 2, writable: false, configurable: true });
+        }
+    }
+
+    override getName(): string { return 'Boss Demon Soldier'; }
+
+    override chooseAttackSequence(): EnemyCombatAction[] {
+        return super.chooseAttackSequence().map(a =>
+            new EnemyCombatAction({
+                name:      a.name,
+                animation: a.animation,
+                duration:  a.duration,
+                direction: a.direction,
+                damage:    a.damage * 2,
+            }),
+        );
+    }
+
+    override getInfo(): string { return `${this.getName()} (Boss)`; }
 }

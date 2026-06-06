@@ -22,7 +22,7 @@ export abstract class ComboMod {
 
 // ── Deck ──────────────────────────────────────────────────────────────────────
 
-const COMBO_MOD_DECK_MAX = 3;
+const COMBO_MOD_DECK_MAX = 4;
 
 export class ComboModDeck {
     private cards: ComboMod[] = [];

@@ -2,16 +2,11 @@ import {useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {
     GRAND_DANCER_BASIC_ACTIONS,
+    GRAND_DANCER_BASIC_ACTIONS_2,
     GRAND_DANCER_SPECIAL_ACTIONS
 } from '../characters/GrandDancer/GrandDancerCombatActions.ts';
 import {AttackDirection, CombatAction, MoveType} from '../game/entities/CombatTypes';
-import {ForceAirborne} from '../data/ComboMod/ForceAirborne';
-import {GroundSlamRating} from '../data/ComboMod/GroundSlamRating';
-import {AmateurDancer} from '../data/ComboMod/AmateurDancer';
-import {ComboMaster} from '../data/ComboMod/ComboMaster';
-import {HitAndRun} from '../data/ComboMod/HitAndRun';
-import {AirSpecialist} from '../data/ComboMod/AirSpecialist';
-import {ComboMod} from '../data/ComboMod/ComboMod.ts';
+import {COMBO_MOD_POOL} from '../data/ComboModPool';
 import {ExtraDamageWhenCrashIntoGround} from '../data/WorldMods/ExtraDamageWhenCrashIntoGround.ts';
 import {WorldMod} from '../data/WorldMods/WorldMod';
 import {ComboRule} from '../data/ComboRule/ComboRule.ts';
@@ -27,19 +22,10 @@ const WORLD_MODIFIER_POOL: WorldMod[] = [
     new ExtraDamageOnAir(),
 ];
 
-const COMBO_MOD_POOL: ComboMod[] = [
-    new ForceAirborne(),
-    new GroundSlamRating(),
-    new AmateurDancer(),
-    new ComboMaster(),
-    new HitAndRun(),
-    new AirSpecialist(),
-];
-
 const BASIC_BY_DIR: Partial<Record<AttackDirection, CombatAction[]>> = {};
-for (const action of GRAND_DANCER_BASIC_ACTIONS) {
-    if (!action.input) continue;
-    const dir = action.input.inputDirection;
+for (const action of [...GRAND_DANCER_BASIC_ACTIONS, ...GRAND_DANCER_BASIC_ACTIONS_2]) {
+    const dir = action.input?.inputDirection;
+    if (dir == null) continue;
     (BASIC_BY_DIR[dir] ??= []).push(action);
 }
 
@@ -66,8 +52,8 @@ function pickRandom<T>(pool: T[], n: number): T[] {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const REQUIRED_MODS = 3;
-const REQUIRED_SPECIALS = 2;
+const REQUIRED_MODS = 1;
+const REQUIRED_SPECIALS = 4;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -75,21 +61,15 @@ export default function RunPreparePage() {
     const navigate = useNavigate();
 
     const [worldModifiers] = useState<WorldMod[]>(() => {
+        const expedition = GameData.getSelectedExpedition();
+        if (expedition) return [...expedition.worldMods];
         const stored = loadRunPrep();
         return stored?.worldModifiers.length ? stored.worldModifiers : pickRandom(WORLD_MODIFIER_POOL, 2);
     });
 
     const [comboRules] = useState<ComboRule[]>(() => [...DEFAULT_COMBO_RULES]);
 
-    const [selectedMods, setSelectedMods] = useState<Set<number>>(() => {
-        const stored = loadRunPrep();
-        if (!stored) return new Set();
-        return new Set(
-            stored.comboMods
-                .map(m => COMBO_MOD_POOL.findIndex(p => p.constructor.name === m.constructor.name))
-                .filter(i => i >= 0),
-        );
-    });
+    const [selectedMods, setSelectedMods] = useState<Set<number>>(() => new Set());
 
     const [selectedActions, setSelectedActions] = useState<Partial<Record<AttackDirection, CombatAction>>>(
         () => {
@@ -141,14 +121,15 @@ export default function RunPreparePage() {
     const handleBeginRun = () => {
         const runPrep = {
             worldModifiers,
-            comboMods: [...selectedMods].map(i => COMBO_MOD_POOL[i]),
+            comboMods:          [...selectedMods].map(i => COMBO_MOD_POOL[i]),
             comboRules,
             actionsByDirection: selectedActions,
-            specials: [...selectedSpecials].map(i => GRAND_DANCER_SPECIAL_ACTIONS[i]),
+            specials:           [...selectedSpecials].map(i => GRAND_DANCER_SPECIAL_ACTIONS[i]),
+            enemyMods:          [],
         };
         GameData.setRunPrep(runPrep);
         saveRunPrep(runPrep);
-        navigate('/game');
+        navigate('/expedition-map');
     };
 
     const missing: string[] = [];
@@ -163,7 +144,7 @@ export default function RunPreparePage() {
             {/* Header */}
             <div className="flex items-center gap-4 px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
                 <button
-                    onClick={() => navigate('/')}
+                    onClick={() => navigate('/world-map')}
                     className="text-gray-400 hover:text-gray-700 text-sm uppercase tracking-widest transition-colors"
                 >
                     ← Back

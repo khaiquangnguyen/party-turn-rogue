@@ -17,23 +17,30 @@ export const FIGHT_PLAYER_X = SCENE_W * 0.42;    // 1613
 export const FIGHT_ENEMY_X  = SCENE_W * 0.55;    // 2112
 
 export const ENEMY_SLOTS: { x: number; y: number }[] = [
-    { x: SCENE_W * 0.72, y: GROUND_Y },          // slot 1 — center right
-    { x: SCENE_W * 0.82, y: GROUND_Y },          // slot 2 — far right
-    { x: SCENE_W * 0.62, y: GROUND_Y },          // slot 3 — near right
+    { x: SCENE_W * 0.60, y: GROUND_Y },          // slot 0 — left
+    { x: SCENE_W * 0.75, y: GROUND_Y },          // slot 1 — center
+    { x: SCENE_W * 0.90, y: GROUND_Y },          // slot 2 — right
 ];
 
-const MOVE_DURATION      = 380;
-const IDLE_RETURN_MS     = 200;
-const HP_BAR_W           = 400;
-const HP_BAR_H           = 28;
-const HP_BAR_ABOVE       = 60;
-const AIRBORNE_Y_OFFSET  = 350;
+const MOVE_DURATION     = 380;
+const IDLE_RETURN_MS    = 200;
+const HP_BAR_W          = 380;
+const HP_BAR_H          = 32;
+const HP_BAR_BELOW      = 20;    // gap between sprite feet and bar top
+const HP_TEXT_SIZE      = '64px';
+const AIRBORNE_Y_OFFSET = 350;
+
+// Selection arrow size (drawn pointing down, above hp bar)
+const ARROW_W = 60;
+const ARROW_H = 48;
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
 export class CombatSceneRenderer {
     private readonly scene: Scene;
-    private enemyHpBars: Phaser.GameObjects.Graphics[] = [];
+    private enemyHpBars:    Phaser.GameObjects.Graphics[] = [];
+    private enemyHpTexts:   Phaser.GameObjects.Text[]     = [];
+    private selectionArrow: Phaser.GameObjects.Graphics | null = null;
 
     constructor(scene: Scene) {
         this.scene = scene;
@@ -49,19 +56,20 @@ export class CombatSceneRenderer {
         this.createAnimations();
         this.createPlayerVisual(players);
         this.createEnemyVisuals(enemies);
+        this.selectionArrow = this.scene.add.graphics().setDepth(52);
     }
 
     // ── Animations ────────────────────────────────────────────────────────────
 
     private createAnimations(): void {
         const enemyDefs = [
-            { key: 'ds-idle-anim',       sheet: 'ds-idle',        rate: 8,  loop: true  },
-            { key: 'ds-death-anim',      sheet: 'ds-death',       rate: 8,  loop: false },
-            { key: 'ds-hurt-anim',       sheet: 'ds-hurt',        rate: 10, loop: false },
-            { key: 'ds-jump-attack-anim', sheet: 'ds-jump-attack', rate: 10, loop: false },
-            { key: 'ds-flame1-anim',     sheet: 'ds-flame1',      rate: 12, loop: false },
-            { key: 'ds-flame2-anim',     sheet: 'ds-flame2',      rate: 12, loop: false },
-            { key: 'ds-flame3-anim',     sheet: 'ds-flame3',      rate: 12, loop: false },
+            { key: 'ds-idle-anim',        sheet: 'ds-idle',        rate: 8,  loop: true  },
+            { key: 'ds-death-anim',        sheet: 'ds-death',       rate: 8,  loop: false },
+            { key: 'ds-hurt-anim',         sheet: 'ds-hurt',        rate: 10, loop: false },
+            { key: 'ds-jump-attack-anim',  sheet: 'ds-jump-attack', rate: 10, loop: false },
+            { key: 'ds-flame1-anim',       sheet: 'ds-flame1',      rate: 12, loop: false },
+            { key: 'ds-flame2-anim',       sheet: 'ds-flame2',      rate: 12, loop: false },
+            { key: 'ds-flame3-anim',       sheet: 'ds-flame3',      rate: 12, loop: false },
         ];
         for (const d of enemyDefs) {
             if (!this.scene.anims.exists(d.key)) {
@@ -109,7 +117,8 @@ export class CombatSceneRenderer {
     }
 
     private createEnemyVisuals(enemies: CombatSceneEnemyCharacter[]): void {
-        this.enemyHpBars = [];
+        this.enemyHpBars  = [];
+        this.enemyHpTexts = [];
 
         enemies.forEach((enemy, i) => {
             const slot = ENEMY_SLOTS[i] ?? ENEMY_SLOTS[0];
@@ -123,10 +132,28 @@ export class CombatSceneRenderer {
             enemy.sprite = sprite;
             sprite.play('ds-idle-anim');
 
-            const bar = this.scene.add.graphics();
+            // HP bar
+            const bar = this.scene.add.graphics().setDepth(50);
             this.enemyHpBars.push(bar);
-            this.drawHpBar(bar, slot.x, enemy.healthManager.getCurrentHealth(), enemy.healthManager.getMaxHealth());
+
+            // HP text — centered just above the bar
+            const text = this.scene.add.text(slot.x, slot.y, '', {
+                fontSize:        HP_TEXT_SIZE,
+                fontFamily:      'Arial Black, sans-serif',
+                color:           '#ffffff',
+                stroke:          '#000000',
+                strokeThickness: 8,
+            }).setOrigin(0.5, 1).setDepth(51);
+            this.enemyHpTexts.push(text);
+
+            this.drawHpBar(bar, text, enemy, enemy.healthManager.getCurrentHealth(), enemy.healthManager.getMaxHealth());
         });
+    }
+
+    // ── Per-frame update (keeps bars tracking sprites during tweens) ─────────
+
+    update(enemies: CombatSceneEnemyCharacter[]): void {
+        this.updateEnemyHpBars(enemies);
     }
 
     // ── HP bars ───────────────────────────────────────────────────────────────
@@ -134,11 +161,12 @@ export class CombatSceneRenderer {
     updateEnemyHpBars(enemies: CombatSceneEnemyCharacter[]): void {
         enemies.forEach((enemy, i) => {
             const bar  = this.enemyHpBars[i];
-            const slot = ENEMY_SLOTS[i] ?? ENEMY_SLOTS[0];
+            const text = this.enemyHpTexts[i];
             if (bar) {
                 this.drawHpBar(
                     bar,
-                    slot.x,
+                    text,
+                    enemy,
                     enemy.healthManager.getCurrentHealth(),
                     enemy.healthManager.getMaxHealth(),
                 );
@@ -148,18 +176,20 @@ export class CombatSceneRenderer {
 
     private drawHpBar(
         graphics: Phaser.GameObjects.Graphics,
-        centerX:  number,
+        label:    Phaser.GameObjects.Text | undefined,
+        enemy:    CombatSceneEnemyCharacter,
         hp:       number,
         maxHp:    number,
     ): void {
-        graphics.clear();
+        const spriteX = enemy.sprite?.x ?? (ENEMY_SLOTS[0].x);
+        const spriteY = enemy.sprite?.y ?? GROUND_Y;
 
-        const spriteTop = GROUND_Y - SPRITE_SCALE * 108;
-        const by  = spriteTop - HP_BAR_ABOVE;
-        const bx  = centerX - HP_BAR_W / 2;
+        const bx  = spriteX - HP_BAR_W / 2;
+        const by  = spriteY + HP_BAR_BELOW;
         const pct = maxHp > 0 ? Math.max(0, hp / maxHp) : 0;
 
-        graphics.fillStyle(0x374151, 0.9);
+        graphics.clear();
+        graphics.fillStyle(0x1f2937, 0.92);
         graphics.fillRoundedRect(bx, by, HP_BAR_W, HP_BAR_H, 6);
 
         if (pct > 0) {
@@ -167,6 +197,58 @@ export class CombatSceneRenderer {
             graphics.fillStyle(color, 1);
             graphics.fillRoundedRect(bx, by, HP_BAR_W * pct, HP_BAR_H, 6);
         }
+
+        if (label) {
+            label.setText(`${Math.max(0, hp)} / ${maxHp}`);
+            label.setOrigin(0.5, 0).setPosition(spriteX, by + HP_BAR_H + 8);
+        }
+    }
+
+    // ── Target selection ──────────────────────────────────────────────────────
+
+    setTargetSelection(targetIndex: number, enemies: CombatSceneEnemyCharacter[]): void {
+        enemies.forEach((enemy, i) => {
+            if (!enemy.sprite) return;
+            if (i === targetIndex && enemy.isAlive) {
+                enemy.sprite.setTint(0xffdd55);
+            } else {
+                enemy.sprite.clearTint();
+            }
+        });
+
+        const arrow = this.selectionArrow;
+        if (!arrow) return;
+
+        arrow.clear();
+
+        const target = enemies[targetIndex];
+        if (!target?.isAlive) return;
+
+        const slot        = ENEMY_SLOTS[targetIndex] ?? ENEMY_SLOTS[0];
+        const spriteTopY  = (target.sprite?.y ?? GROUND_Y) - SPRITE_SCALE * 108;
+        const arrowBottom = spriteTopY - 20;
+        const arrowTop    = arrowBottom - ARROW_H;
+        const cx          = target.sprite?.x ?? slot.x;
+
+        arrow.fillStyle(0xffdd55, 1);
+        arrow.fillTriangle(
+            cx,              arrowBottom,
+            cx - ARROW_W / 2, arrowTop,
+            cx + ARROW_W / 2, arrowTop,
+        );
+    }
+
+    clearTargetSelection(enemies: CombatSceneEnemyCharacter[]): void {
+        this.selectionArrow?.clear();
+        for (const enemy of enemies) enemy.sprite?.clearTint();
+    }
+
+    // ── Enemy visibility ──────────────────────────────────────────────────────
+
+    private setEnemyVisible(index: number, visible: boolean): void {
+        const alpha = visible ? 1 : 0;
+        this.enemyHpBars[index]?.setAlpha(alpha);
+        this.enemyHpTexts[index]?.setAlpha(alpha);
     }
 
     // ── Character movement ────────────────────────────────────────────────────
@@ -174,6 +256,7 @@ export class CombatSceneRenderer {
     moveToCombatPositions(
         players: CombatScenePlayableCharacter[],
         enemies: CombatSceneEnemyCharacter[],
+        frontEnemyIndex: number,
     ): void {
         const p = players[0];
         if (p?.sprite) {
@@ -184,15 +267,22 @@ export class CombatSceneRenderer {
                 ease:     'Power2',
             });
         }
+
         enemies.forEach((enemy, i) => {
             if (!enemy?.sprite) return;
-            const fightX = FIGHT_ENEMY_X + i * 400;
-            this.scene.tweens.add({
-                targets:  enemy.sprite,
-                x:        fightX,
-                duration: MOVE_DURATION,
-                ease:     'Power2',
-            });
+            if (i === frontEnemyIndex) {
+                enemy.sprite.setAlpha(1);
+                this.setEnemyVisible(i, true);
+                this.scene.tweens.add({
+                    targets:  enemy.sprite,
+                    x:        FIGHT_ENEMY_X,
+                    duration: MOVE_DURATION,
+                    ease:     'Power2',
+                });
+            } else {
+                enemy.sprite.setAlpha(0);
+                this.setEnemyVisible(i, false);
+            }
         });
     }
 
@@ -209,9 +299,14 @@ export class CombatSceneRenderer {
                 ease:     'Power2',
             });
         }
+
         enemies.forEach((enemy, i) => {
             if (!enemy?.sprite) return;
             const slot = ENEMY_SLOTS[i] ?? ENEMY_SLOTS[0];
+            if (enemy.isAlive) {
+                enemy.sprite.setAlpha(1);
+                this.setEnemyVisible(i, true);
+            }
             this.scene.tweens.add({
                 targets:  enemy.sprite,
                 x:        slot.x,
@@ -219,6 +314,8 @@ export class CombatSceneRenderer {
                 ease:     'Power2',
             });
         });
+
+        this.clearTargetSelection(enemies);
     }
 
     // ── Airborne ──────────────────────────────────────────────────────────────

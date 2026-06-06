@@ -10,7 +10,7 @@ export class ComboStackSystem {
     }
 
     addComboRating(amount: number): void {
-        this.comboRating = Math.min(10, this.comboRating + amount);
+        this.comboRating = Math.round(Math.min(10, this.comboRating + amount) * 10) / 10;
     }
 
     get finalMultiplier(): number {

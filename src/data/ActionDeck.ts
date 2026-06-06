@@ -1,4 +1,4 @@
-import { AttackDirection, CombatAction, CombatSpecialAction } from '../game/entities/CombatTypes.ts';
+import { AttackDirection, CombatAction } from '../game/entities/CombatTypes.ts';
 
 const ALL_DIRECTIONS: readonly AttackDirection[] = [
     AttackDirection.UP,
@@ -8,11 +8,11 @@ const ALL_DIRECTIONS: readonly AttackDirection[] = [
 ];
 
 const ACTION_DECK_SIZE   = ALL_DIRECTIONS.length;
-const SPECIAL_SLOT_COUNT = 2;
+const SPECIAL_SLOT_COUNT = 4;
 
 export class ActionDeck {
-    private slots:       Map<AttackDirection, CombatAction>;
-    private specialSlots: Array<CombatSpecialAction | null>;
+    private slots:        Map<AttackDirection, CombatAction>;
+    private specialSlots: Array<CombatAction | null>;
 
     private constructor(slots: Map<AttackDirection, CombatAction>) {
         this.slots        = slots;
@@ -31,6 +31,9 @@ export class ActionDeck {
                 throw new Error(`Action "${action.name}" has no input and cannot be assigned to a direction slot.`);
             }
             const dir = action.input.inputDirection;
+            if (dir === null) {
+                throw new Error(`Action "${action.name}" uses a special key and cannot be assigned to a direction slot.`);
+            }
             if (slots.has(dir)) {
                 throw new Error(`Duplicate direction slot: two actions share direction ${AttackDirection[dir]}.`);
             }
@@ -56,7 +59,9 @@ export class ActionDeck {
         if (!action.input) {
             throw new Error(`Action "${action.name}" has no input and cannot be assigned to a direction slot.`);
         }
-        this.slots.set(action.input.inputDirection, action);
+        const dir = action.input.inputDirection;
+        if (dir === null) throw new Error(`Action "${action.name}" uses a special key and cannot be assigned to a direction slot.`);
+        this.slots.set(dir, action);
     }
 
     getAll(): readonly CombatAction[] {
@@ -65,12 +70,12 @@ export class ActionDeck {
 
     // ── Special slots ─────────────────────────────────────────────────────────
 
-    getSpecialAction(index: number): CombatSpecialAction | null {
+    getSpecialAction(index: number): CombatAction | null {
         this.assertSpecialIndex(index);
         return this.specialSlots[index];
     }
 
-    setSpecialAction(index: number, action: CombatSpecialAction): void {
+    setSpecialAction(index: number, action: CombatAction): void {
         this.assertSpecialIndex(index);
         this.specialSlots[index] = action;
     }
@@ -78,6 +83,10 @@ export class ActionDeck {
     clearSpecialAction(index: number): void {
         this.assertSpecialIndex(index);
         this.specialSlots[index] = null;
+    }
+
+    getSpecialByKey(key: 1 | 2 | 3 | 4): CombatAction | null {
+        return this.specialSlots[key - 1] ?? null;
     }
 
     get specialSlotCount(): number {

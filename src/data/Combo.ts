@@ -1,5 +1,6 @@
 import {resolveStepEffects} from "./AutoComboCalculator.ts";
 import {ComboStep} from "./ComboMod/ComboStep.ts";
+import {DancerCombatAction} from "../game/entities/CombatTypes.ts";
 
 // ── Combo ─────────────────────────────────────────────────────────────────────
 export function calculateStepDamage(step: ComboStep, history: readonly ComboStep[]): void {
@@ -31,4 +32,8 @@ export function calculateStepDamage(step: ComboStep, history: readonly ComboStep
     }
 
     resolveStepEffects(step, initialEffects);
+
+    if (step.action instanceof DancerCombatAction) {
+        step.comboStack.addComboRating(step.action.ratingReward);
+    }
 }

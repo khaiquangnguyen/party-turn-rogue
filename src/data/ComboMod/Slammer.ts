@@ -2,7 +2,7 @@ import { MoveType } from '../../game/entities/CombatTypes';
 import { CharacterClass, ComboMod } from './ComboMod.ts';
 import {ComboStep} from "./ComboStep.ts";
 
-export class GroundSlamRating extends ComboMod {
+export class Slammer extends ComboMod {
     title          = 'Ground Slam Rating';
     description    = 'Ground-slam attacks earn +1 crowd rating.';
     allowedClasses = [CharacterClass.GrandDancer];

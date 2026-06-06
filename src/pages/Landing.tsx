@@ -22,10 +22,16 @@ export default function Landing() {
 
             <div className="flex flex-col gap-4 w-64">
                 <button
-                    onClick={() => navigate('/run-prepare')}
+                    onClick={() => navigate('/world-map')}
                     className="w-full py-3 px-6 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-white font-bold uppercase tracking-widest rounded transition-colors shadow"
                 >
                     Start Game
+                </button>
+                <button
+                    onClick={() => navigate('/creatures')}
+                    className="w-full py-3 px-6 bg-white hover:bg-gray-50 active:bg-gray-100 text-gray-700 font-bold uppercase tracking-widest rounded transition-colors shadow border border-gray-200"
+                >
+                    Manage Creatures
                 </button>
             </div>
         </div>

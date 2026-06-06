@@ -31,13 +31,27 @@ export interface ICombatTarget {
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 
+export type ActionInputKey =
+    | { type: 'direction'; direction: AttackDirection }
+    | { type: 'special';   key: 1 | 2 | 3 | 4 };
+
 export class CombatActionInput {
     readonly waitTillNextInputDuration: number;
-    readonly inputDirection:            AttackDirection;
+    private readonly _spec: ActionInputKey;
 
-    constructor(waitTillNextInputDuration: number, inputDirection: AttackDirection) {
+    constructor(waitTillNextInputDuration: number, input: AttackDirection | ActionInputKey) {
         this.waitTillNextInputDuration = waitTillNextInputDuration;
-        this.inputDirection            = inputDirection;
+        this._spec = typeof input === 'number'
+            ? { type: 'direction', direction: input as AttackDirection }
+            : input;
+    }
+
+    get inputDirection(): AttackDirection | null {
+        return this._spec.type === 'direction' ? this._spec.direction : null;
+    }
+
+    get inputSpecialKey(): (1 | 2 | 3 | 4) | null {
+        return this._spec.type === 'special' ? this._spec.key : null;
     }
 }
 
@@ -162,20 +176,24 @@ export class CombatSpecialAction extends CombatAction {
 // ── Dancer combat actions ─────────────────────────────────────────────────────
 
 export interface DancerActionConfig extends ActionConfig {
-    baseRating?: number;
+    ratingReward?:        number;
+    ratingRequirement?: number;
 }
 
 export class DancerCombatAction extends CombatAction {
-    readonly baseRating: number;
+    readonly ratingReward: number;
 
     constructor(config: DancerActionConfig) {
         super(config);
-        this.baseRating = config.baseRating ?? 1;
+        this.ratingReward = config.ratingReward ?? 1;
     }
 }
 
 export class DancerCombatSpecialAction extends DancerCombatAction {
+    readonly ratingRequirement: number;
+
     constructor(config: Omit<DancerActionConfig, 'energyCost'>) {
         super({ ...config, energyCost: 0 });
+        this.ratingRequirement = config.ratingRequirement ?? 0;
     }
 }

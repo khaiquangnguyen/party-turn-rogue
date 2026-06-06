@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { EventBus } from '../game/EventBus';
 import { Events } from '../game/Events';
 import { GameData } from '../game/GameData';
-import { AttackDirection } from '../game/entities/CombatTypes';
+import { AttackDirection, DancerCombatSpecialAction } from '../game/entities/CombatTypes';
 import { DEFAULT_COMBO_RULES } from '../data/ComboRule/DefaultComboRules';
+import { CombatConfig } from '../game/combatConfig';
 import type { CombatSceneV2 } from '../game/scenes/CombatSceneV2';
+import { saveRunPrep } from '../game/RunPrepStorage';
+import { ResourceStorage } from '../game/ResourceStorage';
+import { EdibleLightning, EdibleCloud } from '../data/Creature/Food';
+import type { Food } from '../data/Creature/Food';
+import { ENEMY_MOD_CHOICES, enemyModLabel, enemyModDescription } from '../data/EnemyMod';
+import type { EnemyMod } from '../data/EnemyMod';
+import { COMBO_MOD_POOL } from '../data/ComboModPool';
+import type { ComboMod } from '../data/ComboMod/ComboMod';
 
 // ── Snapshot / state types ────────────────────────────────────────────────────
 
@@ -23,7 +33,9 @@ interface ActionCardInfo {
 }
 
 interface SpecialCardInfo {
-    name: string | null;
+    name:              string | null;
+    inputKey:          number | null;
+    ratingRequirement: number;
 }
 
 interface ComboEntry {
@@ -35,18 +47,28 @@ interface ComboEntry {
 }
 
 interface PlannerEntry {
-    direction:    AttackDirection;
-    dirKey:       string;
+    direction:    AttackDirection | null;
+    displayKey:   string;
     name:         string;
     damage:       number;
     atkMultiplier: number;
     comboRating:  number;
+    waitMs:       number;
 }
 
 interface ComboModInfo {
     title:       string;
     description: string;
 }
+
+// ── Reward choice ─────────────────────────────────────────────────────────────
+
+interface RewardChoice {
+    food:     Food;
+    enemyMod: EnemyMod;
+}
+
+const FOOD_POOL: Food[] = [new EdibleLightning(), new EdibleCloud()];
 
 interface WorldModInfo {
     title:       string;
@@ -66,6 +88,13 @@ interface RhythmState {
     nextPlannedDir?: AttackDirection;
 }
 
+interface InputPhaseState {
+    initialDelayMs: number;
+    moveSettleMs:   number;
+    actionSettleMs: number;
+    startedAt:      number;
+}
+
 interface ParryState {
     direction: AttackDirection;
     duration:  number;
@@ -82,6 +111,7 @@ const DIR_KEYS: Record<AttackDirection, string> = {
 // ── Root component ────────────────────────────────────────────────────────────
 
 export default function CombatUI() {
+    const navigate          = useNavigate();
     const sceneRef          = useRef<CombatSceneV2 | null>(null);
     const plannedSeqRef     = useRef<PlannerEntry[]>([]);
     const executionIdxRef   = useRef(0);
@@ -93,7 +123,10 @@ export default function CombatUI() {
     const [comboMods,    setComboMods]    = useState<ComboModInfo[]>([]);
     const [comboRules,   setComboRules]   = useState<ComboRuleInfo[]>([]);
     const [comboRating,  setComboRating]  = useState<number>(0);
-    const [result,       setResult]       = useState<'victory' | 'defeat' | null>(null);
+    const [result,          setResult]          = useState<'victory' | 'defeat' | null>(null);
+    const [victoryStep,     setVictoryStep]     = useState<'combo-mod' | 'reward' | 'none'>('none');
+    const [comboModChoices, setComboModChoices] = useState<ComboMod[]>([]);
+    const [rewardChoices,   setRewardChoices]   = useState<RewardChoice[]>([]);
     const [rhythm,       setRhythm]       = useState<RhythmState | null>(null);
     const [parry,        setParry]        = useState<ParryState | null>(null);
     const [turnAnnounce, setTurnAnnounce] = useState<{ text: string; isPlayer: boolean } | null>(null);
@@ -105,6 +138,8 @@ export default function CombatUI() {
     const [feedback,     setFeedback]     = useState<{ text: string; color: string; id: number } | null>(null);
     const [inputPrompt,  setInputPrompt]  = useState<{ forcedDir: AttackDirection | null; plannedDir: AttackDirection | null } | null>(null);
     const [hitNumbers,   setHitNumbers]   = useState<{ id: number; damage: number; comboRating: number; atkMultiplier: number }[]>([]);
+    const [inputPhase,   setInputPhase]   = useState<InputPhaseState | null>(null);
+    const [executionIdx, setExecutionIdx] = useState(0);
 
     const showFeedback = useCallback((text: string, color: string) => {
         setFeedback({ text, color, id: Date.now() });
@@ -144,7 +179,12 @@ export default function CombatUI() {
                 })));
                 const specs: SpecialCardInfo[] = [];
                 for (let i = 0; i < deck.specialSlotCount; i++) {
-                    specs.push({ name: deck.getSpecialAction(i)?.name ?? null });
+                    const sp = deck.getSpecialAction(i);
+                    specs.push({
+                        name:              sp?.name ?? null,
+                        inputKey:          sp ? (i + 1) as 1 | 2 | 3 | 4 : null,
+                        ratingRequirement: sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0,
+                    });
                 }
                 setSpecials(specs);
             }
@@ -170,15 +210,19 @@ export default function CombatUI() {
         const onTurnEnd   = () => {
             snapshot();
             setComboLog([]); setHitNumbers([]); setIsPlannerMode(false); setPlannerLog([]); setPhaseAnnounce(null);
+            setInputPhase(null); setExecutionIdx(0);
             plannedSeqRef.current = []; executionIdxRef.current = 0;
         };
-        const onAttackStart = () => { setComboLog([]); setInputPrompt(null); executionIdxRef.current = 0; };
+        const onAttackStart = () => {
+            setComboLog([]); setInputPrompt(null);
+            executionIdxRef.current = 0; setExecutionIdx(0);
+        };
         const onInputPrompt = (data: { forcedDir: AttackDirection | null }) => {
             const plannedDir = plannedSeqRef.current[0]?.direction ?? null;
             setInputPrompt({ forcedDir: data.forcedDir, plannedDir });
         };
         const onActionEnd = (data: {
-            action:        { name: string; input?: { inputDirection: AttackDirection } } | null;
+            action:        { name: string; input?: { inputDirection: AttackDirection | null; inputSpecialKey?: number | null } | null } | null;
             chainMult:     number;
             actualDamage:  number;
             comboRating?:  number;
@@ -186,9 +230,14 @@ export default function CombatUI() {
             isCounter?:    boolean;
         }) => {
             snapshot();
-            if (!data.isCounter) executionIdxRef.current++;
-            const dir    = data.action?.input?.inputDirection;
-            const dirKey = dir !== undefined ? DIR_KEYS[dir] : '—';
+            if (!data.isCounter) {
+                executionIdxRef.current++;
+                setExecutionIdx(executionIdxRef.current);
+            }
+            const inp    = data.action?.input;
+            const dirKey = inp?.inputDirection != null  ? DIR_KEYS[inp.inputDirection]
+                         : inp?.inputSpecialKey != null ? String(inp.inputSpecialKey)
+                         : '—';
             const cr   = data.comboRating;
             const mult = data.atkMultiplier ?? 1;
             setComboLog(prev => [...prev, {
@@ -211,10 +260,43 @@ export default function CombatUI() {
             setTurnAnnounce(null);
             setHitNumbers([]);
             snapshot();
+            if (r === 'victory') {
+                const nodeIdx    = GameData.getSelectedExpedition()?.map.currentIndex ?? 0;
+                const posInStage = nodeIdx % 4;  // 0=first, 3=last
+
+                if (posInStage === 0) {
+                    // First level of stage — combo mod reward.
+                    const runPrep    = GameData.getRunPrep();
+                    const ownedNames = new Set((runPrep?.comboMods ?? []).map(m => m.constructor.name));
+                    const pool       = COMBO_MOD_POOL.filter(m => !ownedNames.has(m.constructor.name));
+                    const choices: ComboMod[] = [];
+                    for (let i = 0; i < 3 && pool.length; i++) {
+                        choices.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+                    }
+                    setComboModChoices(choices);
+                    setVictoryStep('combo-mod');
+                } else if (posInStage === 3) {
+                    // Last level of stage — resource + enemy upgrade reward.
+                    const enemyModPool = [...ENEMY_MOD_CHOICES];
+                    const choices: RewardChoice[] = [];
+                    for (let i = 0; i < 2; i++) {
+                        const food     = FOOD_POOL[Math.floor(Math.random() * FOOD_POOL.length)];
+                        const modIdx   = Math.floor(Math.random() * enemyModPool.length);
+                        const enemyMod = enemyModPool.splice(modIdx, 1)[0];
+                        choices.push({ food, enemyMod });
+                    }
+                    setRewardChoices(choices);
+                    setVictoryStep('reward');
+                } else {
+                    setVictoryStep('none');
+                }
+            }
         };
 
         const onRhythmStart = (data: { durationMs: number; earlyWindowMs: number; lateWindowMs: number }) => {
-            const nextPlannedDir = plannedSeqRef.current[executionIdxRef.current]?.direction;
+            const entry = plannedSeqRef.current[executionIdxRef.current];
+            // Only pass direction hint for direction-based actions; specials show via InputPhaseStrip
+            const nextPlannedDir = entry?.direction ?? undefined;
             setRhythm({ ...data, startedAt: performance.now(), nextPlannedDir });
         };
         const onRhythmEnd = () => setRhythm(null);
@@ -236,33 +318,40 @@ export default function CombatUI() {
             setTimeout(() => setPhaseAnnounce(null), 1200);
         };
         const onPlannerAction = (data: {
-            action:          { name: string; input?: { inputDirection: AttackDirection } };
+            action:          { name: string; input?: { inputDirection: AttackDirection | null; inputSpecialKey?: number | null } };
+            displayKey:      string;
             simulatedDamage: number;
             comboRating:     number;
             atkMultiplier:   number;
+            waitMs:          number;
         }) => {
-            const dir    = data.action.input?.inputDirection;
-            const dirKey = dir !== undefined ? DIR_KEYS[dir] : '—';
+            const dir = data.action.input?.inputDirection ?? null;
             const entry: PlannerEntry = {
-                direction:     dir ?? AttackDirection.UP,
-                dirKey,
+                direction:     dir,
+                displayKey:    data.displayKey,
                 name:          data.action.name,
                 damage:        data.simulatedDamage,
                 atkMultiplier: data.atkMultiplier,
                 comboRating:   data.comboRating,
+                waitMs:        data.waitMs,
             };
             setPlannerLog(prev => [...prev, entry]);
             plannedSeqRef.current = [...plannedSeqRef.current, entry];
+            setComboRating(data.comboRating);
         };
-        const onPlannerUndo = () => {
+        const onPlannerUndo = (data: { comboRating: number }) => {
             setPlannerLog(prev => prev.slice(0, -1));
             plannedSeqRef.current = plannedSeqRef.current.slice(0, -1);
+            setComboRating(data.comboRating);
         };
         const onPlannerEnd  = () => {
             setIsPlannerMode(false);
             setPlannerLog([]);
             setPhaseAnnounce({ text: 'Execute!', color: '#f59e0b' });
             setTimeout(() => setPhaseAnnounce(null), 900);
+        };
+        const onInputPhaseStart = (data: { initialDelayMs: number; moveSettleMs: number; actionSettleMs: number }) => {
+            setInputPhase({ ...data, startedAt: performance.now() });
         };
 
         EventBus.on(Events.CURRENT_SCENE_READY,            onSceneReady);
@@ -279,10 +368,11 @@ export default function CombatUI() {
         EventBus.on(Events.COMBAT_V2_PARRY,          onParry);
         EventBus.on(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
         EventBus.on(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
-        EventBus.on(Events.COMBAT_V2_PLANNER_START,  onPlannerStart);
-        EventBus.on(Events.COMBAT_V2_PLANNER_ACTION, onPlannerAction);
-        EventBus.on(Events.COMBAT_V2_PLANNER_UNDO,   onPlannerUndo);
-        EventBus.on(Events.COMBAT_V2_PLANNER_END,    onPlannerEnd);
+        EventBus.on(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
+        EventBus.on(Events.COMBAT_V2_PLANNER_ACTION,    onPlannerAction);
+        EventBus.on(Events.COMBAT_V2_PLANNER_UNDO,      onPlannerUndo);
+        EventBus.on(Events.COMBAT_V2_PLANNER_END,       onPlannerEnd);
+        EventBus.on(Events.COMBAT_V2_INPUT_PHASE_START, onInputPhaseStart);
 
         return () => {
             EventBus.off(Events.CURRENT_SCENE_READY,            onSceneReady);
@@ -299,12 +389,43 @@ export default function CombatUI() {
             EventBus.off(Events.COMBAT_V2_PARRY,          onParry);
             EventBus.off(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
             EventBus.off(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
-            EventBus.off(Events.COMBAT_V2_PLANNER_START,  onPlannerStart);
-            EventBus.off(Events.COMBAT_V2_PLANNER_ACTION, onPlannerAction);
-            EventBus.off(Events.COMBAT_V2_PLANNER_UNDO,   onPlannerUndo);
-            EventBus.off(Events.COMBAT_V2_PLANNER_END,    onPlannerEnd);
+            EventBus.off(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
+            EventBus.off(Events.COMBAT_V2_PLANNER_ACTION,    onPlannerAction);
+            EventBus.off(Events.COMBAT_V2_PLANNER_UNDO,      onPlannerUndo);
+            EventBus.off(Events.COMBAT_V2_PLANNER_END,       onPlannerEnd);
+            EventBus.off(Events.COMBAT_V2_INPUT_PHASE_START, onInputPhaseStart);
         };
     }, [snapshot, showFeedback]);
+
+    const pickComboMod = useCallback((mod: ComboMod) => {
+        const runPrep = GameData.getRunPrep();
+        if (runPrep) {
+            const updated = { ...runPrep, comboMods: [...runPrep.comboMods, mod] };
+            GameData.setRunPrep(updated);
+            saveRunPrep(updated);
+        }
+        GameData.advanceExpeditionNode();
+        navigate('/expedition-map');
+    }, [navigate]);
+
+    const pickReward = useCallback((choice: RewardChoice) => {
+        // Persist food resource permanently.
+        ResourceStorage.addFood(choice.food);
+
+        // Add enemy mod to the current run prep and persist it.
+        const runPrep = GameData.getRunPrep();
+        if (runPrep) {
+            const updated = {
+                ...runPrep,
+                enemyMods: [...(runPrep.enemyMods ?? []), choice.enemyMod],
+            };
+            GameData.setRunPrep(updated);
+            saveRunPrep(updated);
+        }
+
+        GameData.advanceExpeditionNode();
+        navigate('/expedition-map');
+    }, [navigate]);
 
     if (!player) return null;
 
@@ -342,7 +463,7 @@ export default function CombatUI() {
                     ? <PlannerStrip log={plannerLog} maxSteps={plannerMax} />
                     : comboLog.length > 0 && <ComboLogStrip log={comboLog} />
                 }
-                {inputPrompt && <PlayerInputPrompt forcedDir={inputPrompt.forcedDir} plannedDir={inputPrompt.plannedDir} />}
+                {inputPrompt && !inputPhase && <PlayerInputPrompt forcedDir={inputPrompt.forcedDir} plannedDir={inputPrompt.plannedDir} />}
                 {feedback && (
                     <CombatFeedbackText
                         key={feedback.id}
@@ -350,7 +471,19 @@ export default function CombatUI() {
                         color={feedback.color}
                     />
                 )}
-                {rhythm && (
+                {inputPhase ? (
+                    <InputPhaseStrip
+                        key={inputPhase.startedAt}
+                        sequence={plannedSeqRef.current}
+                        initialDelayMs={inputPhase.initialDelayMs}
+                        moveSettleMs={inputPhase.moveSettleMs}
+                        actionSettleMs={inputPhase.actionSettleMs}
+                        earlyWindowMs={CombatConfig.inputEarlyWindow}
+                        lateWindowMs={CombatConfig.inputLateWindow}
+                        executionIdx={executionIdx}
+                        startedAt={inputPhase.startedAt}
+                    />
+                ) : rhythm ? (
                     <RhythmOverlay
                         key={rhythm.startedAt}
                         durationMs={rhythm.durationMs}
@@ -358,7 +491,7 @@ export default function CombatUI() {
                         lateWindowMs={rhythm.lateWindowMs}
                         nextPlannedDir={rhythm.nextPlannedDir}
                     />
-                )}
+                ) : null}
                 {parry && (
                     <ParryOverlay
                         key={parry.startedAt}
@@ -380,13 +513,92 @@ export default function CombatUI() {
             {/* Combat result overlay */}
             {result && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-auto">
-                    <div className="bg-white rounded-2xl px-12 py-8 text-center shadow-2xl">
-                        <p className={`text-4xl font-bold tracking-widest uppercase ${
-                            result === 'victory' ? 'text-amber-600' : 'text-red-500'
-                        }`}>
-                            {result === 'victory' ? 'Victory' : 'Defeat'}
-                        </p>
-                    </div>
+                    {result === 'victory' && victoryStep === 'none' ? (
+                        <div className="bg-white rounded-2xl px-12 py-8 text-center shadow-2xl flex flex-col items-center gap-6">
+                            <p className="text-4xl font-bold tracking-widest uppercase text-amber-600">Victory</p>
+                            <button
+                                onClick={() => { GameData.advanceExpeditionNode(); navigate('/expedition-map'); }}
+                                className="px-8 py-3 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-white font-bold uppercase tracking-widest rounded-lg transition-colors shadow"
+                            >
+                                Continue →
+                            </button>
+                        </div>
+                    ) : result === 'victory' && victoryStep === 'combo-mod' ? (
+                        <div className="bg-white rounded-2xl px-8 py-8 text-center shadow-2xl flex flex-col items-center gap-5 w-full max-w-lg mx-4">
+                            <p className="text-4xl font-bold tracking-widest uppercase text-amber-600">Victory!</p>
+                            <p className="text-xs font-bold uppercase tracking-widest text-gray-400">
+                                Choose a Combo Mod
+                            </p>
+                            <div className="flex flex-col gap-3 w-full">
+                                {comboModChoices.map((mod, i) => (
+                                    <button
+                                        key={i}
+                                        onClick={() => pickComboMod(mod)}
+                                        className="rounded-xl p-4 text-left border-2 border-gray-200 bg-gray-50 hover:border-amber-500 hover:bg-amber-50 transition-colors"
+                                    >
+                                        <p className="text-sm font-bold text-gray-900">{mod.title}</p>
+                                        <p className="text-xs text-gray-500 mt-1 leading-relaxed">{mod.description}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : result === 'victory' && victoryStep === 'reward' ? (
+                        <div className="bg-white rounded-2xl px-8 py-8 text-center shadow-2xl flex flex-col items-center gap-5 w-full max-w-lg mx-4">
+                            <p className="text-xs font-bold uppercase tracking-widest text-gray-400">
+                                Choose your reward
+                            </p>
+                            <div className="flex gap-3 w-full">
+                                {rewardChoices.map((choice, i) => (
+                                    <button
+                                        key={i}
+                                        onClick={() => pickReward(choice)}
+                                        className="flex-1 rounded-xl p-4 text-left border-2 border-gray-200 bg-gray-50 hover:border-amber-500 hover:bg-amber-50 transition-colors flex flex-col gap-3"
+                                    >
+                                        <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-2">
+                                            <p className="text-xs font-bold uppercase tracking-widest text-green-600 mb-0.5">
+                                                Resource
+                                            </p>
+                                            <p className="text-sm font-bold text-gray-900">{choice.food.name}</p>
+                                            <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                                                {choice.food.description}
+                                            </p>
+                                        </div>
+                                        <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+                                            <p className="text-xs font-bold uppercase tracking-widest text-red-500 mb-0.5">
+                                                Enemy Buff
+                                            </p>
+                                            <p className="text-sm font-bold text-gray-900">
+                                                {enemyModLabel(choice.enemyMod)}
+                                            </p>
+                                            <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                                                {enemyModDescription(choice.enemyMod)}
+                                            </p>
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="bg-white rounded-2xl px-12 py-8 text-center shadow-2xl flex flex-col items-center gap-6">
+                            <p className="text-4xl font-bold tracking-widest uppercase text-red-500">
+                                Defeat
+                            </p>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => navigate('/expedition-map')}
+                                    className="px-6 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold uppercase tracking-widest rounded-lg transition-colors"
+                                >
+                                    Retreat
+                                </button>
+                                <button
+                                    onClick={() => navigate('/game')}
+                                    className="px-6 py-3 bg-red-500 hover:bg-red-400 text-white font-bold uppercase tracking-widest rounded-lg transition-colors shadow"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>
@@ -458,13 +670,34 @@ function TopBar({
                     ))}
                 </div>
                 {specials.some(s => s.name) && (
-                    <div className="flex gap-1.5 mt-1.5">
-                        {specials.map((s, i) => s.name ? (
-                            <div key={i} className="bg-purple-50 border border-purple-200 rounded-lg px-2 py-1.5 text-center w-24">
-                                <span className="block text-xs font-bold text-purple-600 mb-0.5">SP{i + 1}</span>
-                                <span className="block text-xs text-gray-700 leading-tight">{s.name}</span>
-                            </div>
-                        ) : null)}
+                    <div className="mt-2">
+                        <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1">Specials</p>
+                        <div className="flex gap-1.5 flex-wrap">
+                            {specials.map((s, i) => {
+                                if (!s.name) return null;
+                                const usable = comboRating >= s.ratingRequirement;
+                                return (
+                                    <div
+                                        key={i}
+                                        className={`rounded-lg px-2 py-1.5 text-center w-24 border transition-colors ${
+                                            usable
+                                                ? 'bg-purple-50 border-purple-500 shadow-[0_0_6px_rgba(168,85,247,0.4)]'
+                                                : 'bg-gray-50 border-gray-200 opacity-60'
+                                        }`}
+                                    >
+                                        <div className="flex items-center justify-between mb-0.5">
+                                            <span className={`text-xs font-bold ${usable ? 'text-purple-600' : 'text-gray-400'}`}>
+                                                [{s.inputKey ?? '?'}]
+                                            </span>
+                                            <span className={`text-xs font-bold ${usable ? 'text-amber-500' : 'text-gray-400'}`}>
+                                                ★{s.ratingRequirement}
+                                            </span>
+                                        </div>
+                                        <span className="block text-xs text-gray-700 leading-tight">{s.name}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 )}
             </div>
@@ -826,6 +1059,146 @@ function PhaseAnnounce({ text, color }: { text: string; color: string }) {
     );
 }
 
+// ── Input phase rhythm strip ──────────────────────────────────────────────────
+
+const BASE_PX_PER_MS = 0.22;
+const HIT_X          = 110;
+const NODE_R     = 26;
+const TRACK_W    = 740;
+const TRACK_H    = 80;
+
+function InputPhaseStrip({
+    sequence,
+    initialDelayMs,
+    moveSettleMs,
+    actionSettleMs,
+    earlyWindowMs,
+    lateWindowMs,
+    executionIdx,
+    startedAt,
+}: {
+    sequence:       PlannerEntry[];
+    initialDelayMs: number;
+    moveSettleMs:   number;
+    actionSettleMs: number;
+    earlyWindowMs:  number;
+    lateWindowMs:   number;
+    executionIdx:   number;
+    startedAt:      number;
+}) {
+    const [elapsed, setElapsed] = useState(0);
+    const rafRef = useRef<number>(0);
+
+    useEffect(() => {
+        const origin = startedAt;
+        const tick = () => {
+            setElapsed(performance.now() - origin);
+            rafRef.current = requestAnimationFrame(tick);
+        };
+        rafRef.current = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafRef.current);
+    }, [startedAt]);
+
+    // expected press time for each node, relative to strip startedAt
+    const hitTimes: number[] = [];
+    if (sequence.length > 0) {
+        hitTimes[0] = initialDelayMs;
+        for (let i = 1; i < sequence.length; i++) {
+            const gap = (i === 1 ? moveSettleMs : 0) + actionSettleMs + (sequence[i - 1].waitMs ?? 0);
+            hitTimes[i] = hitTimes[i - 1] + gap;
+        }
+    }
+
+    const pxPerMs = BASE_PX_PER_MS * CombatConfig.inputPhaseSpeed;
+    const earlyPx = earlyWindowMs * pxPerMs;
+    const latePx  = lateWindowMs  * pxPerMs;
+
+    return (
+        <div className="w-full flex justify-center py-2 bg-black/5">
+            <div className="bg-white/95 border border-gray-200 rounded-xl px-5 py-3 shadow-lg">
+                <p className="text-xs text-gray-400 uppercase tracking-widest text-center mb-2">Input Phase</p>
+                <div style={{ position: 'relative', width: TRACK_W, height: TRACK_H, overflow: 'hidden' }}>
+
+                    {/* Track line */}
+                    <div style={{
+                        position: 'absolute', left: 0, right: 0,
+                        top: TRACK_H / 2 - 2, height: 4,
+                        backgroundColor: '#e5e7eb', borderRadius: 9999,
+                    }} />
+
+                    {/* Timing window highlight */}
+                    <div style={{
+                        position:        'absolute',
+                        left:            HIT_X - earlyPx,
+                        width:           earlyPx + latePx,
+                        top:             TRACK_H / 2 - 8,
+                        height:          16,
+                        backgroundColor: 'rgba(34,197,94,0.35)',
+                        borderRadius:    4,
+                    }} />
+
+                    {/* Hit zone ring */}
+                    <div style={{
+                        position:        'absolute',
+                        left:            HIT_X - NODE_R,
+                        top:             TRACK_H / 2 - NODE_R,
+                        width:           NODE_R * 2,
+                        height:          NODE_R * 2,
+                        borderRadius:    '50%',
+                        border:          '3px dashed #9ca3af',
+                        backgroundColor: 'transparent',
+                        zIndex:          1,
+                    }} />
+
+                    {/* Nodes */}
+                    {sequence.map((entry, i) => {
+                        if (i < executionIdx) return null;
+                        const x       = HIT_X + (hitTimes[i] - elapsed) * pxPerMs;
+                        const isCurr  = i === executionIdx;
+                        const isNear  = Math.abs(x - HIT_X) < NODE_R * 3;
+
+                        if (x > TRACK_W + NODE_R * 2) return null; // off right edge
+
+                        return (
+                            <div
+                                key={i}
+                                style={{
+                                    position:        'absolute',
+                                    left:            x - NODE_R,
+                                    top:             TRACK_H / 2 - NODE_R,
+                                    width:           NODE_R * 2,
+                                    height:          NODE_R * 2,
+                                    borderRadius:    '50%',
+                                    border:          `3px solid ${isCurr ? '#f59e0b' : '#6b7280'}`,
+                                    backgroundColor: isCurr ? '#fef3c7' : '#f3f4f6',
+                                    display:         'flex',
+                                    alignItems:      'center',
+                                    justifyContent:  'center',
+                                    boxShadow:       isCurr && isNear ? '0 0 12px 4px rgba(245,158,11,0.5)' : 'none',
+                                    zIndex:          2,
+                                    opacity:         x < -NODE_R ? 0 : 1,
+                                }}
+                            >
+                                <span style={{
+                                    fontSize:   entry.direction !== null ? '1.1rem' : '1rem',
+                                    fontWeight: 900,
+                                    color:      isCurr ? '#92400e' : '#374151',
+                                    lineHeight: 1,
+                                    userSelect: 'none',
+                                }}>
+                                    {entry.direction !== null
+                                        ? PARRY_DIR_ARROW[entry.direction]
+                                        : entry.displayKey}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ── Planner strip ─────────────────────────────────────────────────────────────
 
 function PlannerStrip({ log, maxSteps }: { log: PlannerEntry[]; maxSteps: number }) {
@@ -851,7 +1224,7 @@ function PlannerStrip({ log, maxSteps }: { log: PlannerEntry[]; maxSteps: number
                     >
                         {/* Header row: key + name */}
                         <div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1">
-                            <span className="font-bold text-sky-600">[{entry.dirKey}]</span>
+                            <span className="font-bold text-sky-600">[{entry.displayKey}]</span>
                             <span className="font-medium text-gray-800">{entry.name}</span>
                         </div>
                         {/* Stats row */}
@@ -896,7 +1269,7 @@ function ComboLogStrip({ log }: { log: ComboEntry[] }) {
                     }`}
                 >
                     {!entry.isCounter && (
-                        <span className="font-bold text-amber-600">[{entry.dirKey}]</span>
+                        <span className="font-bold text-amber-600">[{entry.dirKey ?? '—'}]</span>
                     )}
                     <span className="font-medium">{entry.name}</span>
                     <span className="font-bold text-red-500">−{entry.damage}</span>

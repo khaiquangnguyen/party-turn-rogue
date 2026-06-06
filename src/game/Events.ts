@@ -25,6 +25,7 @@ export const Events = {
     COMBAT_V2_PLAYER_ACTION_END:     'combat-v2-player-action-end',
     COMBAT_V2_RHYTHM_START:          'combat-v2-rhythm-start',
     COMBAT_V2_RHYTHM_END:            'combat-v2-rhythm-end',
+    COMBAT_V2_INPUT_PHASE_START:     'combat-v2-input-phase-start',
 
     // ── V2 combat — planner ───────────────────────────────────────────────────
     COMBAT_V2_PLANNER_START:         'combat-v2-planner-start',

@@ -1,6 +1,6 @@
 import { GRAND_DANCER_BASIC_ACTIONS, GRAND_DANCER_SPECIAL_ACTIONS } from '../characters/GrandDancer/GrandDancerCombatActions.ts';
 import { ForceAirborne } from '../data/ComboMod/ForceAirborne';
-import { GroundSlamRating } from '../data/ComboMod/GroundSlamRating';
+import { Slammer } from '../data/ComboMod/Slammer.ts';
 import { AmateurDancer } from '../data/ComboMod/AmateurDancer';
 import { ComboMaster } from '../data/ComboMod/ComboMaster';
 import { HitAndRun } from '../data/ComboMod/HitAndRun';
@@ -14,6 +14,7 @@ import type { ComboMod } from '../data/ComboMod/ComboMod.ts';
 import type { WorldMod } from '../data/WorldMods/WorldMod';
 import type { ComboRule } from '../data/ComboRule/ComboRule.ts';
 import type { RunPrepData } from './GameData';
+import type { EnemyMod } from '../data/EnemyMod';
 import {ExtraDamageOnAir} from "../data/WorldMods/ExtraDamageOnAir.ts";
 
 const STORAGE_KEY = 'party-turn-rogue:run-prep';
@@ -22,7 +23,7 @@ const STORAGE_KEY = 'party-turn-rogue:run-prep';
 
 const COMBO_MOD_REGISTRY: Record<string, () => ComboMod> = {
     ForceAirborne:   () => new ForceAirborne(),
-    GroundSlamRating: () => new GroundSlamRating(),
+    GroundSlamRating: () => new Slammer(),
     AmateurDancer:   () => new AmateurDancer(),
     Amateur:         () => new AmateurDancer(),   // backward-compat for old saves
     ComboMaster:     () => new ComboMaster(),
@@ -48,6 +49,7 @@ interface StoredRunPrep {
     comboRuleNames: string[];
     actionNames:    Record<string, string>;   // dir (number key) → action.name
     specialNames:   string[];
+    enemyMods:      EnemyMod[];
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -63,6 +65,7 @@ export function saveRunPrep(data: RunPrepData): void {
                 .map(([dir, a]) => [dir, a!.name]),
         ),
         specialNames: data.specials.map(s => s.name),
+        enemyMods:    data.enemyMods ?? [],
     };
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
@@ -107,7 +110,9 @@ export function loadRunPrep(): RunPrepData | null {
             .map(n => GRAND_DANCER_SPECIAL_ACTIONS.find(a => a.name === n))
             .filter((a): a is NonNullable<typeof a> => !!a);
 
-        return { worldModifiers, comboMods, comboRules, actionsByDirection, specials };
+        const enemyMods: EnemyMod[] = Array.isArray(s.enemyMods) ? s.enemyMods : [];
+
+        return { worldModifiers, comboMods, comboRules, actionsByDirection, specials, enemyMods };
     } catch {
         return null;
     }
