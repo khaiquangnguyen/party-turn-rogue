@@ -2,15 +2,13 @@ export interface CharacterConfig {
     name:       string;
     maxHealth?: number;
     maxEnergy?: number;
-    defense?:   number;
     speed?:     number;
     attack?:    number;
 }
 
 export interface CharacterStats {
-    defense: number;
-    speed:   number;
-    attack:  number;
+    speed:  number;
+    attack: number;
 }
 
 export abstract class CharacterTemplate {
@@ -24,9 +22,8 @@ export abstract class CharacterTemplate {
         this.maxHealth = config.maxHealth ?? 100;
         this.maxEnergy = config.maxEnergy ?? 50;
         this.stats = {
-            defense: config.defense ?? 10,
-            speed:   config.speed   ?? 10,
-            attack:  config.attack  ?? 10,
+            speed:  config.speed  ?? 10,
+            attack: config.attack ?? 10,
         };
     }
 

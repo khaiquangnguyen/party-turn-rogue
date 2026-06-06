@@ -15,6 +15,7 @@ import type { WorldMod } from '../data/WorldMods/WorldMod';
 import type { ComboRule } from '../data/ComboRule/ComboRule.ts';
 import type { RunPrepData } from './GameData';
 import type { EnemyMod } from '../data/EnemyMod';
+import { CreatureStorage } from './CreatureStorage';
 import {ExtraDamageOnAir} from "../data/WorldMods/ExtraDamageOnAir.ts";
 
 const STORAGE_KEY = 'party-turn-rogue:run-prep';
@@ -44,12 +45,13 @@ const COMBO_RULE_REGISTRY: Record<string, () => ComboRule> = {
 // ── Storage schema ────────────────────────────────────────────────────────────
 
 interface StoredRunPrep {
-    worldModNames:  string[];
-    comboModNames:  string[];
-    comboRuleNames: string[];
-    actionNames:    Record<string, string>;   // dir (number key) → action.name
-    specialNames:   string[];
-    enemyMods:      EnemyMod[];
+    worldModNames:   string[];
+    comboModNames:   string[];
+    comboRuleNames:  string[];
+    actionNames:     Record<string, string>;   // dir (number key) → action.name
+    specialNames:    string[];
+    enemyMods:       EnemyMod[];
+    companionNames:  string[];
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -64,8 +66,9 @@ export function saveRunPrep(data: RunPrepData): void {
                 .filter(([, a]) => !!a)
                 .map(([dir, a]) => [dir, a!.name]),
         ),
-        specialNames: data.specials.map(s => s.name),
-        enemyMods:    data.enemyMods ?? [],
+        specialNames:   data.specials.map(s => s.name),
+        enemyMods:      data.enemyMods ?? [],
+        companionNames: (data.companions ?? []).map(c => c.constructor.name),
     };
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
@@ -112,7 +115,11 @@ export function loadRunPrep(): RunPrepData | null {
 
         const enemyMods: EnemyMod[] = Array.isArray(s.enemyMods) ? s.enemyMods : [];
 
-        return { worldModifiers, comboMods, comboRules, actionsByDirection, specials, enemyMods };
+        const companions = (s.companionNames ?? [])
+            .map(n => CreatureStorage.getByName(n))
+            .filter((c): c is NonNullable<typeof c> => !!c);
+
+        return { worldModifiers, comboMods, comboRules, actionsByDirection, specials, enemyMods, companions };
     } catch {
         return null;
     }

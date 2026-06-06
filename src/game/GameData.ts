@@ -5,6 +5,7 @@ import { CombatAction, AttackDirection } from './entities/CombatTypes';
 import type { ComboRule } from '../data/ComboRule/ComboRule.ts';
 import type { Expedition } from '../data/WorldMap/Expedition.ts';
 import type { EnemyMod } from '../data/EnemyMod';
+import type { CreatureTemplate } from '../data/Creature/CreatureTemplate.ts';
 
 export interface RunPrepData {
     worldModifiers:     WorldMod[];
@@ -13,6 +14,7 @@ export interface RunPrepData {
     actionsByDirection: Partial<Record<AttackDirection, CombatAction>>;
     specials:           CombatAction[];
     enemyMods:          EnemyMod[];
+    companions:         CreatureTemplate[];
 }
 
 let _selectedCharacter:  PlayableCharacter | null = null;

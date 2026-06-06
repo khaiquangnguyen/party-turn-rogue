@@ -49,4 +49,13 @@ export const CreatureStorage = {
     randomFromPool(): CreatureTemplate {
         return CREATURE_POOL[Math.floor(Math.random() * CREATURE_POOL.length)];
     },
+
+    initWithAllCreatures(): void {
+        const names = Object.keys(CREATURE_REGISTRY);
+        this.saveNames(names);
+    },
+
+    getByName(name: string): CreatureTemplate | undefined {
+        return CREATURE_REGISTRY[name]?.();
+    },
 };

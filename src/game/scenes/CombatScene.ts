@@ -4,7 +4,6 @@ import { Events } from '../Events';
 import { GameData } from '../GameData';
 import { TheGrandDancer } from '../../characters/GrandDancer/TheGrandDancer.ts';
 import { DemonSoldier, AttackDirection, HitInfo } from '../entities/DemonSoldier';
-import { DamageType } from '../entities/CharacterState';
 import { CombatScenePlayableCharacter, CombatSceneEnemyCharacter } from '../entities/CombatSceneCharacter';
 import { PLAYER_ANIM_FRAMES } from './Preloader';
 import {
@@ -282,7 +281,7 @@ export class CombatScene extends Scene {
             return true;
         }
 
-        const dealt = this.player.damage(hit.damage, DamageType.TRUE);
+        const dealt = this.player.damage(hit.damage);
         this.emitCombatState(`${this.pendingMsg} — Hit ${idx + 1}/${total} — ${dealt} dmg`);
 
         this.playerSprite.play(PA.hit);
@@ -356,7 +355,7 @@ export class CombatScene extends Scene {
                 x: PLAYER_ATTACK_X, duration: 140, ease: 'Quad.easeIn',
                 onComplete: () => {
                     this.player.energyManager.consume(action.energyCost);
-                    const dealt = this.enemy.damage(action.damage, DamageType.TRUE);
+                    const dealt = this.enemy.damage(action.damage);
 
                     this.playerSprite.play(phaserAnimKey);
                     this.playerSprite.once('animationcomplete', () => {
@@ -444,7 +443,7 @@ export class CombatScene extends Scene {
             targets: this.playerContainer,
             x: PLAYER_ATTACK_X, duration: 200, ease: 'Quad.easeIn',
             onComplete: () => {
-                const dealt = this.enemy.damage(30, DamageType.TRUE);
+                const dealt = this.enemy.damage(30);
                 this.emitCombatState(`Counter strike! ${dealt} true damage!`);
                 this.cameras.main.shake(140, 0.012);
                 this.shakeSprite(this.enemySprite);

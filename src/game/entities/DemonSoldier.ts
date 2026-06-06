@@ -1,7 +1,5 @@
 import { EnemyCharacter, EnemyType } from './EnemyCharacter';
 import { AttackDirection, HitInfo, ActionResult, CombatAction, CombatActionInput, EnemyCombatAction } from './CombatTypes';
-import { DamageType } from './CharacterState';
-
 export { AttackDirection };
 export type { HitInfo, ActionResult, CombatAction };
 
@@ -10,8 +8,7 @@ function makeHits(count: number, damage: number, dir?: AttackDirection): HitInfo
     const dirs = [AttackDirection.UP, AttackDirection.DOWN, AttackDirection.LEFT, AttackDirection.RIGHT];
     return Array.from({ length: count }, () => ({
         damage,
-        direction:  dir ?? dirs[Math.floor(Math.random() * dirs.length)],
-        damageType: DamageType.PHYSICAL,
+        direction: dir ?? dirs[Math.floor(Math.random() * dirs.length)],
     }));
 }
 
@@ -29,7 +26,6 @@ export class DemonSoldier extends EnemyCharacter {
             enemyType:        EnemyType.ELITE,
             maxHealth:        50,
             maxEnergy:        80,
-            defense:          12,
             speed:            8,
             level:            1,
             experienceReward: 50,

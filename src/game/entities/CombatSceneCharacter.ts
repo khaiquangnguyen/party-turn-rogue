@@ -4,7 +4,6 @@ import { PlayableCharacter } from './PlayableCharacter';
 import { EnemyCharacter } from './EnemyCharacter';
 import { HealthManager } from './HealthManager';
 import { IEnergyManager, ManaEnergy } from './EnergyManager';
-import { DamageType } from './CharacterState';
 import { CombatEffect, ICombatTarget } from './CombatTypes';
 import { Airborne } from './CombatEffects';
 import { ActionDeck } from '../../data/ActionDeck.ts';
@@ -49,11 +48,8 @@ export abstract class CombatSceneCharacter implements ICombatTarget {
     get isAlive(): boolean { return this.healthManager.isAlive(); }
     get isDead():  boolean { return this.healthManager.isDead(); }
 
-    damage(amount: number, type: DamageType = DamageType.PHYSICAL): number {
-        const final = type === DamageType.TRUE
-            ? amount
-            : Math.round(amount * (100 / (100 + this.template.stats.defense)));
-        return this.healthManager.damage(final);
+    damage(amount: number): number {
+        return this.healthManager.damage(amount);
     }
 
     heal(amount: number): void {

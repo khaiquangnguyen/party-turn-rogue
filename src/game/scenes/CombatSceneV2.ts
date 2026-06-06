@@ -8,7 +8,6 @@ import {
 import { CombatRoundTurnOrderManager } from '../CombatRoundTurnOrderManager';
 import { QTEEventType, AttackDirection, CombatAction } from '../entities/CombatTypes';
 import { ComboStackSystem } from '../../data/ComboStackSystem';
-import { DamageType } from '../entities/CharacterState';
 import { WorldMod } from '../../data/WorldMods/WorldMod';
 import { ComboRule } from '../../data/ComboRule/ComboRule.ts';
 import { DEFAULT_COMBO_RULES } from '../../data/ComboRule/DefaultComboRules';
@@ -307,7 +306,7 @@ export class CombatSceneV2 extends Scene {
 
             this.sceneRenderer.playPlayerAttack(actor, `player-${action.animation}-anim`);
 
-            const actualDamage = target.damage(step.finalDamage, DamageType.PHYSICAL);
+            const actualDamage = target.damage(step.finalDamage);
             for (const effect of action.effects) effect.apply(target);
             this.sceneRenderer.updateEnemyHpBars(this.enemies);
             this.sceneRenderer.playEnemyHit(target);
@@ -586,7 +585,7 @@ export class CombatSceneV2 extends Scene {
                 });
                 continuousParryCount = 0;
                 if (target.isAlive) {
-                    target.damage(action.damage, DamageType.TRUE);
+                    target.damage(action.damage);
                 }
                 EventBus.emit(Events.COMBAT_V2_PLAYER_HIT, { damage: action.damage });
             }
@@ -617,7 +616,7 @@ export class CombatSceneV2 extends Scene {
 
         EventBus.emit(Events.COMBAT_V2_COUNTER_ATTACK, { attacker, counterTarget });
 
-        const dealt = counterTarget.damage(30, DamageType.TRUE);
+        const dealt = counterTarget.damage(30);
         this.sceneRenderer.updateEnemyHpBars(this.enemies);
 
         counterTarget.sprite?.clearTint();

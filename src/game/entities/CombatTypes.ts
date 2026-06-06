@@ -1,5 +1,3 @@
-import { DamageType } from './CharacterState';
-
 export enum MoveType {
     OnGround      = 0,
     OnAir         = 1,
@@ -25,7 +23,7 @@ export abstract class CombatEffect {
 // ── Combat target ─────────────────────────────────────────────────────────────
 
 export interface ICombatTarget {
-    damage(amount: number, type: DamageType): number;
+    damage(amount: number): number;
     applyEffect(effect: CombatEffect): void;
 }
 
@@ -58,9 +56,8 @@ export class CombatActionInput {
 // ── Hit / QTE types ───────────────────────────────────────────────────────────
 
 export interface HitInfo {
-    damage:     number;
-    direction:  AttackDirection;
-    damageType: DamageType;
+    damage:    number;
+    direction: AttackDirection;
 }
 
 export interface ActionResult {
@@ -159,7 +156,7 @@ export class CombatAction {
     }
 
     execute(target: ICombatTarget, multiplier = new AttackMultiplier()): number {
-        const dealt = target.damage(Math.round(this.damage * multiplier.finalMultiplier + multiplier.extraDamage), DamageType.PHYSICAL);
+        const dealt = target.damage(Math.round(this.damage * multiplier.finalMultiplier + multiplier.extraDamage));
         for (const effect of this.effects) {
             effect.apply(target);
         }

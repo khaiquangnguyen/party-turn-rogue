@@ -5,6 +5,9 @@ import RunPreparePage from './pages/RunPreparePage';
 import WorldMapPage from './pages/WorldMapPage';
 import ExpeditionMapPage from './pages/ExpeditionMapPage';
 import CreaturesPage from './pages/CreaturesPage';
+import { CreatureStorage } from './game/CreatureStorage';
+
+CreatureStorage.initWithAllCreatures();
 
 export default function App() {
     return (

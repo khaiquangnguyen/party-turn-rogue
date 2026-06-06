@@ -14,6 +14,10 @@ import {DEFAULT_COMBO_RULES} from '../data/ComboRule/DefaultComboRules';
 import {GameData} from '../game/GameData';
 import {loadRunPrep, saveRunPrep} from '../game/RunPrepStorage';
 import {ExtraDamageOnAir} from "../data/WorldMods/ExtraDamageOnAir.ts";
+import {CreatureStorage} from '../game/CreatureStorage.ts';
+import {CombatConfig} from '../game/combatConfig.ts';
+import type {CreatureTemplate} from '../data/Creature/CreatureTemplate.ts';
+import {useCreatureGif} from '../hooks/useCreatureGif.ts';
 
 // ── Static pools ──────────────────────────────────────────────────────────────
 
@@ -59,6 +63,19 @@ const REQUIRED_SPECIALS = 4;
 
 export default function RunPreparePage() {
     const navigate = useNavigate();
+
+    const [availableCreatures] = useState<CreatureTemplate[]>(() => CreatureStorage.loadCreatures());
+    const [selectedCompanions, setSelectedCompanions] = useState<Set<number>>(() => new Set());
+
+    const toggleCompanion = (i: number) => setSelectedCompanions(prev => {
+        const next = new Set(prev);
+        if (next.has(i)) {
+            next.delete(i);
+        } else if (next.size < CombatConfig.maxCompanions) {
+            next.add(i);
+        }
+        return next;
+    });
 
     const [worldModifiers] = useState<WorldMod[]>(() => {
         const expedition = GameData.getSelectedExpedition();
@@ -126,6 +143,7 @@ export default function RunPreparePage() {
             actionsByDirection: selectedActions,
             specials:           [...selectedSpecials].map(i => GRAND_DANCER_SPECIAL_ACTIONS[i]),
             enemyMods:          [],
+            companions:         [...selectedCompanions].map(i => availableCreatures[i]),
         };
         GameData.setRunPrep(runPrep);
         saveRunPrep(runPrep);
@@ -302,6 +320,32 @@ export default function RunPreparePage() {
                         </div>
                     </section>
 
+                    {/* Companions */}
+                    {availableCreatures.length > 0 && (
+                        <section>
+                            <SectionHeader
+                                label="Companion"
+                                count={selectedCompanions.size}
+                                required={CombatConfig.maxCompanions}
+                            />
+                            <div className="grid grid-cols-2 gap-3 mt-4">
+                                {availableCreatures.map((creature, i) => {
+                                    const selected = selectedCompanions.has(i);
+                                    const locked   = !selected && selectedCompanions.size >= CombatConfig.maxCompanions;
+                                    return (
+                                        <CompanionCard
+                                            key={i}
+                                            creature={creature}
+                                            selected={selected}
+                                            locked={locked}
+                                            onClick={() => toggleCompanion(i)}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    )}
+
                     {/* Begin Run */}
                     <div className="pb-4">
                         <button
@@ -352,6 +396,42 @@ function SectionHeader({
             )}
             <div className="flex-1 h-px bg-gray-200"/>
         </div>
+    );
+}
+
+function CompanionCard({
+    creature, selected, locked, onClick,
+}: {
+    creature: CreatureTemplate;
+    selected: boolean;
+    locked:   boolean;
+    onClick:  () => void;
+}) {
+    const gifSrc = useCreatureGif(creature.gifUrl);
+    return (
+        <SelectableCard selected={selected} locked={locked} onClick={onClick}>
+            <div className="flex items-start gap-3">
+                {creature.gifUrl !== null && (
+                    <div className="w-12 h-12 flex-shrink-0 flex items-center justify-center bg-gray-50 rounded">
+                        {gifSrc
+                            ? <img src={gifSrc} alt={creature.name} className="w-full h-full object-contain rounded" />
+                            : <span className="text-xs text-gray-300">…</span>
+                        }
+                    </div>
+                )}
+                <div className="min-w-0">
+                    <p className="text-sm font-bold text-gray-900">{creature.name}</p>
+                    <p className="text-xs text-gray-400 italic mb-1.5">
+                        {creature.personalities.join(' · ')}
+                    </p>
+                    <div className="flex flex-col gap-1">
+                        {creature.supportPassives.map((p, j) => (
+                            <span key={j} className="text-xs text-amber-700 font-medium">{p.title}</span>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        </SelectableCard>
     );
 }
 

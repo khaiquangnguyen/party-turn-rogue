@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCreatureGif } from '../hooks/useCreatureGif';
 import { useNavigate } from 'react-router-dom';
 import { EventBus } from '../game/EventBus';
 import { Events } from '../game/Events';
@@ -61,6 +62,12 @@ interface ComboModInfo {
     description: string;
 }
 
+interface CompanionInfo {
+    name:     string;
+    gifUrl:   string | null;
+    passives: { title: string; description: string }[];
+}
+
 // ── Reward choice ─────────────────────────────────────────────────────────────
 
 interface RewardChoice {
@@ -121,6 +128,7 @@ export default function CombatUI() {
     const [specials,     setSpecials]     = useState<SpecialCardInfo[]>([]);
     const [worldMods,    setWorldMods]    = useState<WorldModInfo[]>([]);
     const [comboMods,    setComboMods]    = useState<ComboModInfo[]>([]);
+    const [companions,   setCompanions]   = useState<CompanionInfo[]>([]);
     const [comboRules,   setComboRules]   = useState<ComboRuleInfo[]>([]);
     const [comboRating,  setComboRating]  = useState<number>(0);
     const [result,          setResult]          = useState<'victory' | 'defeat' | null>(null);
@@ -199,6 +207,12 @@ export default function CombatUI() {
                 const cards = p.comboModDeck.getCards();
                 setComboMods(cards.map(m => ({ title: m.title, description: m.description })));
             }
+
+            setCompanions((runPrep?.companions ?? []).map(c => ({
+                name:     c.name,
+                gifUrl:   c.gifUrl,
+                passives: c.supportPassives.map(sp => ({ title: sp.title, description: sp.description })),
+            })));
         };
 
         const onTurnStart = ({ isPlayer, comboRating }: { isPlayer: boolean; comboRating: number }) => {
@@ -458,6 +472,7 @@ export default function CombatUI() {
                     comboMods={comboMods}
                     comboRules={comboRules}
                     comboRating={comboRating}
+                    companions={companions}
                 />
                 {isPlannerMode
                     ? <PlannerStrip log={plannerLog} maxSteps={plannerMax} />
@@ -500,6 +515,11 @@ export default function CombatUI() {
                     />
                 )}
             </div>
+
+            {/* Companion GIFs — rendered behind the player */}
+            {companions.map((c, i) => c.gifUrl && (
+                <CompanionOverlay key={i} companion={c} index={i} />
+            ))}
 
             {/* Floating hit numbers */}
             {hitNumbers.length > 0 && (
@@ -608,7 +628,7 @@ export default function CombatUI() {
 // ── Top info bar ──────────────────────────────────────────────────────────────
 
 function TopBar({
-    player, actions, specials, worldMods, comboMods, comboRules, comboRating,
+    player, actions, specials, worldMods, comboMods, comboRules, comboRating, companions,
 }: {
     player:      PlayerSnapshot;
     actions:     ActionCardInfo[];
@@ -617,6 +637,7 @@ function TopBar({
     comboMods:   ComboModInfo[];
     comboRules:  ComboRuleInfo[];
     comboRating: number;
+    companions:  CompanionInfo[];
 }) {
     const hpPct = Math.max(0, (player.hp / player.maxHp) * 100);
 
@@ -747,6 +768,20 @@ function TopBar({
                                     <span className="block text-xs font-bold text-red-700 mb-0.5">{r.title}</span>
                                     <span className="block text-xs text-red-600 leading-tight">{r.description}</span>
                                 </div>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {companions.length > 0 && (
+                <>
+                    <div className="w-px self-stretch bg-gray-200" />
+                    <div className="flex-shrink-0 max-w-[260px]">
+                        <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1.5">Companion</p>
+                        <div className="flex flex-col gap-2">
+                            {companions.map((c, i) => (
+                                <CompanionTopBarEntry key={i} companion={c} />
                             ))}
                         </div>
                     </div>
@@ -1287,5 +1322,47 @@ function ComboLogStrip({ log }: { log: ComboEntry[] }) {
                 </div>
             )}
         </div>
+    );
+}
+
+// ── Companion sub-components ──────────────────────────────────────────────────
+
+function CompanionTopBarEntry({ companion }: { companion: CompanionInfo }) {
+    const gifSrc = useCreatureGif(companion.gifUrl);
+    return (
+        <div className="flex items-start gap-2">
+            {companion.gifUrl !== null && (
+                <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center bg-gray-50 rounded">
+                    {gifSrc && <img src={gifSrc} alt={companion.name} className="w-full h-full object-contain rounded" />}
+                </div>
+            )}
+            <div className="min-w-0">
+                <p className="text-xs font-bold text-gray-700 mb-0.5">{companion.name}</p>
+                {companion.passives.map((p, j) => (
+                    <div key={j} className="rounded-md bg-amber-50 border border-amber-200 px-2 py-1 mb-1">
+                        <span className="block text-xs font-bold text-amber-700">{p.title}</span>
+                        <span className="block text-xs text-amber-600 leading-tight">{p.description}</span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+function CompanionOverlay({ companion, index }: { companion: CompanionInfo; index: number }) {
+    const gifSrc = useCreatureGif(companion.gifUrl);
+    if (!gifSrc) return null;
+    return (
+        <img
+            src={gifSrc}
+            alt={companion.name}
+            className="absolute pointer-events-none"
+            style={{
+                bottom: '18%',
+                left:   `${13 - index * 6}%`,
+                height: '120px',
+                width:  'auto',
+            }}
+        />
     );
 }

@@ -24,7 +24,6 @@ export abstract class PlayableCharacter extends CharacterTemplate {
             name:      'Player',
             maxHealth: 100,
             maxEnergy: 60,
-            defense:   10,
             speed:     12,
             attack:    10,
             ...config,

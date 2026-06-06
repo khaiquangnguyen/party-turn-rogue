@@ -6,4 +6,6 @@ export const CombatConfig = {
     // Input phase rhythm strip
     // 1 = nodes travel at exactly the declared timing distance; 2 = twice as fast (nodes start further right)
     inputPhaseSpeed:   2,
+
+    maxCompanions: 1,
 } as const;
