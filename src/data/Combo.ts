@@ -5,9 +5,10 @@ import {DancerCombatAction} from "../game/entities/CombatTypes.ts";
 // ── Combo ─────────────────────────────────────────────────────────────────────
 export function calculateStepDamage(step: ComboStep, history: readonly ComboStep[]): void {
     const initialEffects = new Map(step.activeEffects);
-    step.applicableComboRules = [];
-    step.applicableComboMods = [];
-    step.applicableWorldMods = [];
+    step.applicableComboRules       = [];
+    step.applicableComboMods        = [];
+    step.applicableWorldMods        = [];
+    step.applicableCreaturePassives = [];
 
     for (const rule of step.availableComboRules) {
         if (rule.onBeforeAction(step, history)) step.applicableComboRules.push(rule);
@@ -17,6 +18,9 @@ export function calculateStepDamage(step: ComboStep, history: readonly ComboStep
     }
     for (const wm of step.availableWorldMods) {
         if (wm.onBeforeAction(step, history)) step.applicableWorldMods.push(wm);
+    }
+    for (const passive of step.availableCreaturePassives) {
+        if (passive.onBeforeAction(step, history)) step.applicableCreaturePassives.push(passive);
     }
 
     step.finalDamage = Math.ceil(step.action.damage * step.comboStack.finalMultiplier + step.comboStack.extraDamage);
@@ -29,6 +33,9 @@ export function calculateStepDamage(step: ComboStep, history: readonly ComboStep
     }
     for (const rule of step.availableComboRules) {
         if (rule.onAfterAction(step, history) && !step.applicableComboRules.includes(rule)) step.applicableComboRules.push(rule);
+    }
+    for (const passive of step.availableCreaturePassives) {
+        if (passive.onAfterAction(step, history) && !step.applicableCreaturePassives.includes(passive)) step.applicableCreaturePassives.push(passive);
     }
 
     resolveStepEffects(step, initialEffects);

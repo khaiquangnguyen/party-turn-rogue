@@ -23,6 +23,7 @@ import {calculateStepDamage} from "../../data/Combo.ts";
 import {ComboStep} from "../../data/ComboMod/ComboStep.ts";
 import {ComboMod} from "../../data/ComboMod/ComboMod.ts";
 import {DancerCombatSpecialAction} from "../entities/CombatTypes.ts";
+import type {SupportPassive} from "../../data/Creature/SupportPassive.ts";
 
 // ── Input map ─────────────────────────────────────────────────────────────────
 
@@ -63,11 +64,12 @@ export class CombatSceneV2 extends Scene {
     readonly players: CombatScenePlayableCharacter[] = [];
     readonly enemies: CombatSceneEnemyCharacter[]   = [];
 
-    private turnManager!:   CombatRoundTurnOrderManager;
-    private sceneRenderer!: CombatSceneRenderer;
-    private worldMods:      readonly WorldMod[]  = [];
-    private comboRules:     readonly ComboRule[]  = [];
-    private comboHistory:   ComboStep[]           = [];
+    private turnManager!:        CombatRoundTurnOrderManager;
+    private sceneRenderer!:     CombatSceneRenderer;
+    private worldMods:           readonly WorldMod[]        = [];
+    private comboRules:          readonly ComboRule[]        = [];
+    private creaturePassives:    readonly SupportPassive[]   = [];
+    private comboHistory:        ComboStep[]                 = [];
 
     // Last direction the enemy attacked with — used by ForceFollowLastEnemyInput.
     // Null means no enemy has acted yet (or enemy just died): free input allowed.
@@ -111,8 +113,9 @@ export class CombatSceneV2 extends Scene {
     }
 
     create(): void {
-        this.worldMods     = GameData.getRunPrep()?.worldModifiers ?? [];
-        this.comboRules    = DEFAULT_COMBO_RULES;
+        this.worldMods        = GameData.getRunPrep()?.worldModifiers ?? [];
+        this.comboRules       = DEFAULT_COMBO_RULES;
+        this.creaturePassives = (GameData.getRunPrep()?.companions ?? []).flatMap(c => c.supportPassives);
         this.sceneRenderer = new CombatSceneRenderer(this);
         this.sceneRenderer.setup(this.players, this.enemies);
 
@@ -225,10 +228,11 @@ export class CombatSceneV2 extends Scene {
         if (!target?.isAlive) return;
 
         const mods      = actor.comboModDeck.getCards();
+        const passives  = this.creaturePassives;
         const forcedDir: AttackDirection | null =
             CombatFeatureFlags.ForceFollowLastEnemyInput ? this.lastEnemyInputDir : null;
 
-        await this.waitForPlannerInput(actor, mods, forcedDir);
+        await this.waitForPlannerInput(actor, mods, passives, forcedDir);
 
         EventBus.emit(Events.COMBAT_V2_INPUT_PHASE_START, {
             initialDelayMs: 500 + INITIAL_INPUT_DELAY_MS,
@@ -257,8 +261,9 @@ export class CombatSceneV2 extends Scene {
         const turnStartIndex = this.comboHistory.length;
 
         if (turnStartIndex === 0) {
-            for (const mod of mods) mod.onComboStart(this.comboHistory);
-            for (const wm of this.worldMods) wm.onComboStart(this.comboHistory);
+            for (const mod     of mods)    mod.onComboStart(this.comboHistory);
+            for (const wm      of this.worldMods) wm.onComboStart(this.comboHistory);
+            for (const passive of passives) passive.onComboStart(this.comboHistory);
         }
 
         EventBus.emit(Events.COMBAT_V2_PLAYER_ATTACK_START, { actor, target });
@@ -288,13 +293,15 @@ export class CombatSceneV2 extends Scene {
 
             const step: ComboStep = {
                 action,
-                comboStack:          new ComboStackSystem(ratingPool),
-                availableWorldMods:  this.worldMods,
-                availableComboMods:  mods,
-                availableComboRules: this.comboRules,
-                applicableWorldMods:  [],
-                applicableComboMods:  [],
-                applicableComboRules: [],
+                comboStack:                 new ComboStackSystem(ratingPool),
+                availableWorldMods:         this.worldMods,
+                availableComboMods:         mods,
+                availableComboRules:        this.comboRules,
+                availableCreaturePassives:  passives,
+                applicableWorldMods:         [],
+                applicableComboMods:         [],
+                applicableComboRules:        [],
+                applicableCreaturePassives:  [],
                 activeEffects: prev ? new Map(prev.activeEffects) : new Map(),
                 newEffects:    [],
                 lostEffects:   [],
@@ -339,13 +346,15 @@ export class CombatSceneV2 extends Scene {
         }
 
         const turnSteps = this.comboHistory.slice(turnStartIndex);
-        for (const mod of mods) mod.onComboEnd(turnSteps);
-        for (const wm of this.worldMods) wm.onComboEnd(turnSteps);
+        for (const mod     of mods)    mod.onComboEnd(turnSteps);
+        for (const wm      of this.worldMods) wm.onComboEnd(turnSteps);
+        for (const passive of passives) passive.onComboEnd(turnSteps);
     }
 
     private waitForPlannerInput(
         actor:          CombatScenePlayableCharacter,
         mods:           readonly ComboMod[],
+        passives:       readonly SupportPassive[],
         forcedFirstDir: AttackDirection | null,
     ): Promise<void> {
         const simulatedHistory: ComboStep[] = [...this.comboHistory];
@@ -367,7 +376,7 @@ export class CombatSceneV2 extends Scene {
         if (forcedFirstDir !== null) {
             ratingPoolHistory.push(simRatingPool);
             simRatingPool = this.addSimulatedStep(
-                actor, mods, actor.actionDeck.getAction(forcedFirstDir), simulatedHistory, simRatingPool,
+                actor, mods, passives, actor.actionDeck.getAction(forcedFirstDir), simulatedHistory, simRatingPool,
             );
         }
         const lockedCount = forcedFirstDir !== null ? 1 : 0;
@@ -416,7 +425,7 @@ export class CombatSceneV2 extends Scene {
                         0, simRatingPool - (sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0),
                     );
                     ratingPoolHistory.push(simRatingPool);
-                    simRatingPool = this.addSimulatedStep(actor, mods, sp, simulatedHistory, ratingAfterConsume);
+                    simRatingPool = this.addSimulatedStep(actor, mods, passives, sp, simulatedHistory, ratingAfterConsume);
                     return;
                 }
 
@@ -426,7 +435,7 @@ export class CombatSceneV2 extends Scene {
                 if (simulatedHistory.length - this.comboHistory.length >= maxSteps) return;
                 ratingPoolHistory.push(simRatingPool);
                 simRatingPool = this.addSimulatedStep(
-                    actor, mods, actor.actionDeck.getAction(dir), simulatedHistory, simRatingPool,
+                    actor, mods, passives, actor.actionDeck.getAction(dir), simulatedHistory, simRatingPool,
                 );
             };
 
@@ -438,6 +447,7 @@ export class CombatSceneV2 extends Scene {
     private addSimulatedStep(
         _actor:           CombatScenePlayableCharacter,
         mods:             readonly ComboMod[],
+        passives:         readonly SupportPassive[],
         action:           CombatAction,
         simulatedHistory: ComboStep[],
         startingRating:   number,
@@ -445,13 +455,15 @@ export class CombatSceneV2 extends Scene {
         const prev = simulatedHistory[simulatedHistory.length - 1] ?? null;
         const step: ComboStep = {
             action,
-            comboStack:          new ComboStackSystem(startingRating),
-            availableWorldMods:  this.worldMods,
-            availableComboMods:  mods,
-            availableComboRules: this.comboRules,
-            applicableWorldMods:  [],
-            applicableComboMods:  [],
-            applicableComboRules: [],
+            comboStack:                 new ComboStackSystem(startingRating),
+            availableWorldMods:         this.worldMods,
+            availableComboMods:         mods,
+            availableComboRules:        this.comboRules,
+            availableCreaturePassives:  passives,
+            applicableWorldMods:         [],
+            applicableComboMods:         [],
+            applicableComboRules:        [],
+            applicableCreaturePassives:  [],
             activeEffects: prev ? new Map(prev.activeEffects) : new Map(),
             newEffects:    [],
             lostEffects:   [],

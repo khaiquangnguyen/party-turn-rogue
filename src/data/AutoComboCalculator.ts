@@ -7,6 +7,7 @@ import {WorldMod} from './WorldMods/WorldMod';
 import type {ComboRule} from './ComboRule/ComboRule.ts';
 import {calculateStepDamage} from "./Combo.ts";
 import {ComboStep} from "./ComboMod/ComboStep.ts";
+import type {SupportPassive} from "./Creature/SupportPassive.ts";
 
 const ALL_DIRECTIONS: AttackDirection[] = [
     AttackDirection.UP,
@@ -47,7 +48,8 @@ function simulateDamage(
     actionDeck: ActionDeck,
     mods:       readonly ComboMod[],
     worldMods:  readonly WorldMod[],
-    rules:      readonly ComboRule[] = [],
+    rules:      readonly ComboRule[]    = [],
+    passives:   readonly SupportPassive[] = [],
 ): number {
     const history: ComboStep[] = [];
     let total = 0;
@@ -60,11 +62,13 @@ function simulateDamage(
             action,
             comboStack:                new ComboStackSystem(prev?.comboStack.comboRating ?? 0),
             availableWorldMods:        worldMods,
-            availableComboMods: mods,
+            availableComboMods:        mods,
             availableComboRules:       rules,
-            applicableWorldMods:       [],
-            applicableComboMods:            [],
-            applicableComboRules:      [],
+            availableCreaturePassives: passives,
+            applicableWorldMods:        [],
+            applicableComboMods:        [],
+            applicableComboRules:       [],
+            applicableCreaturePassives: [],
             activeEffects:             prev ? new Map(prev.activeEffects) : new Map(),
             newEffects:                [],
             lostEffects:               [],
@@ -86,9 +90,10 @@ export function findBestCombo(
     energy:     number,
     actionDeck: ActionDeck,
     mods:       readonly ComboMod[],
-    worldMods:  readonly WorldMod[] = [],
-    rules:      readonly ComboRule[] = [],
-    firstDir:   AttackDirection | null   = null,
+    worldMods:  readonly WorldMod[]       = [],
+    rules:      readonly ComboRule[]      = [],
+    firstDir:   AttackDirection | null    = null,
+    passives:   readonly SupportPassive[] = [],
 ): AttackDirection[] {
     const depth = Math.min(energy, MAX_SEARCH_DEPTH);
     if (depth === 0) return [];
@@ -99,7 +104,7 @@ export function findBestCombo(
 
     function search(remaining: number): void {
         if (remaining === 0) {
-            const dmg = simulateDamage(current, actionDeck, mods, worldMods, rules);
+            const dmg = simulateDamage(current, actionDeck, mods, worldMods, rules, passives);
             if (dmg > bestDamage) {
                 bestDamage   = dmg;
                 bestSequence = [...current];

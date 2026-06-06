@@ -1,7 +1,6 @@
-export abstract class SupportPassive {
-    abstract readonly title:       string;
-    abstract readonly description: string;
-}
+import { ComboMod } from '../ComboMod/ComboMod.ts';
+
+export abstract class SupportPassive extends ComboMod {}
 
 // Each attack has a 10% chance to not consume energy.
 export class NoEnergyConsumeChance extends SupportPassive {
