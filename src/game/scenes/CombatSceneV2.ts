@@ -45,7 +45,7 @@ type TimedInputResult =
     | { kind: 'dir';     direction: AttackDirection; timed: boolean }
     | { kind: 'special'; action: CombatAction };
 
-const ENERGY_PER_TURN       = 3;
+const ENERGY_PER_TURN       = 2;
 const MOVE_SETTLE_MS        = 420;
 const IDLE_RETURN_MS        = 200;
 const ACTION_SETTLE_MS      = 500;
@@ -234,13 +234,15 @@ export class CombatSceneV2 extends Scene {
 
         await this.waitForPlannerInput(actor, mods, passives, forcedDir);
 
+        const speed = CombatConfig.inputPhaseSpeed;
+
         EventBus.emit(Events.COMBAT_V2_INPUT_PHASE_START, {
-            initialDelayMs: 500 + INITIAL_INPUT_DELAY_MS,
-            moveSettleMs:   MOVE_SETTLE_MS,
-            actionSettleMs: ACTION_SETTLE_MS,
+            initialDelayMs: (500 + INITIAL_INPUT_DELAY_MS) / speed,
+            moveSettleMs:   MOVE_SETTLE_MS / speed,
+            actionSettleMs: ACTION_SETTLE_MS / speed,
         });
 
-        await this.delay(500);
+        await this.delay(500 / speed);
 
         // ratingPool carries the combo rating through the turn; specials deduct from it
         let ratingPool = this.comboHistory.length > 0
@@ -254,7 +256,7 @@ export class CombatSceneV2 extends Scene {
             return sp;
         };
 
-        const firstInput = await this.waitForNextTimedInput(INITIAL_INPUT_DELAY_MS, lookupSpecial);
+        const firstInput = await this.waitForNextTimedInput(INITIAL_INPUT_DELAY_MS / speed, lookupSpecial);
         if (!firstInput) return;
         let nextInput: TimedInputResult = firstInput;
 
@@ -269,7 +271,7 @@ export class CombatSceneV2 extends Scene {
         EventBus.emit(Events.COMBAT_V2_PLAYER_ATTACK_START, { actor, target });
 
         this.sceneRenderer.moveToCombatPositions(this.players, this.enemies, this._targetIndex);
-        await this.delay(MOVE_SETTLE_MS);
+        await this.delay(MOVE_SETTLE_MS / speed);
 
         let isFirstAction = true;
 
@@ -334,12 +336,12 @@ export class CombatSceneV2 extends Scene {
 
             this.comboHistory.push(step);
 
-            await this.delay(ACTION_SETTLE_MS);
+            await this.delay(ACTION_SETTLE_MS / speed);
 
             if (actor.energyManager.getCurrentEnergy() <= 0) break;
 
             const waitMs = action.input?.waitTillNextInputDuration ?? 0;
-            const next   = await this.waitForNextTimedInput(waitMs, lookupSpecial);
+            const next   = await this.waitForNextTimedInput(waitMs / speed, lookupSpecial);
             if (!next) break;
 
             nextInput = next;
@@ -486,7 +488,7 @@ export class CombatSceneV2 extends Scene {
             simulatedDamage: step.finalDamage,
             comboRating:     step.comboStack.comboRating,
             atkMultiplier:   step.comboStack.finalMultiplier,
-            waitMs:          input?.waitTillNextInputDuration ?? 0,
+            waitMs:          (input?.waitTillNextInputDuration ?? 0) / CombatConfig.inputPhaseSpeed,
         });
 
         return step.comboStack.comboRating;
@@ -565,6 +567,7 @@ export class CombatSceneV2 extends Scene {
             if (!target?.isAlive || !this.players.some(p => p.isAlive)) return;
 
             EventBus.emit(Events.COMBAT_V2_ENEMY_MOVE_START, { actor, target, action });
+            this.sceneRenderer.repositionEnemyForAttack(actor, action.direction);
             const outcome = await new EnemyCombatActionHandler(this, action).execute();
 
             // Track last enemy input direction regardless of outcome
@@ -586,6 +589,10 @@ export class CombatSceneV2 extends Scene {
                     counterAttacked = true;
                     break;
                 }
+            } else if (outcome.type === QTEEventType.WrongBlock) {
+                // Timed press but wrong direction — blocked but no parry credit
+                continuousParryCount = 0;
+                EventBus.emit(Events.COMBAT_V2_WRONG_BLOCK, {});
             } else {
                 target.sprite?.setTint(0xff4444);
                 target.onHit();

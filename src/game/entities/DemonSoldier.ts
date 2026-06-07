@@ -24,7 +24,7 @@ export class DemonSoldier extends EnemyCharacter {
         super({
             name:             'Demon Soldier',
             enemyType:        EnemyType.ELITE,
-            maxHealth:        50,
+            maxHealth:        60,
             maxEnergy:        80,
             speed:            8,
             level:            1,
@@ -136,7 +136,7 @@ export class BossDemonSoldier extends DemonSoldier {
     constructor() {
         super();
         // Double max HP.
-        Object.defineProperty(this, 'maxHealth', { value: 100, writable: false, configurable: true });
+        Object.defineProperty(this, 'maxHealth', { value: 120, writable: false, configurable: true });
         // Double each action's base damage.
         for (const action of this.actions) {
             Object.defineProperty(action, 'damage', { value: action.damage * 2, writable: false, configurable: true });

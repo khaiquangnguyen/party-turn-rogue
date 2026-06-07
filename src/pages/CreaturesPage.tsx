@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useNavigate          } from 'react-router-dom';
 import { CreatureStorage      } from '../game/CreatureStorage.ts';
 import { CreatureVisualCache  } from '../game/CreatureVisualCache.ts';
-import { FoodNeed             } from '../data/Creature/FoodNeed.ts';
 import type { CreatureTemplate } from '../data/Creature/CreatureTemplate.ts';
 import { useCreatureGif       } from '../hooks/useCreatureGif.ts';
 
@@ -53,7 +52,7 @@ export default function CreaturesPage() {
 
 function CreatureCard({ creature }: { creature: CreatureTemplate }) {
     const gifSrc   = useCreatureGif(creature.gifUrl);
-    const foodNeeds = creature.needs.filter((n): n is FoodNeed => n instanceof FoodNeed);
+    const acceptedFoods = creature.acceptableFoods;
 
     return (
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col gap-3 overflow-hidden">
@@ -72,31 +71,31 @@ function CreatureCard({ creature }: { creature: CreatureTemplate }) {
                 {/* Header */}
                 <div className="flex items-baseline justify-between">
                     <p className="text-lg font-black text-gray-900">{creature.name}</p>
-                    <p className="text-xs text-gray-400 italic">{creature.gender}</p>
+                    {creature.gender === 'Genderless' && (
+                        <p className="text-xs text-gray-400 italic">Genderless</p>
+                    )}
                 </div>
 
                 <p className="text-xs text-gray-500 italic">
-                    {creature.personalities.join(' · ')}
+                    {creature.personalities.map(p => p.name).join(' · ')}
                 </p>
 
-                {/* Food requirements */}
-                {foodNeeds.length > 0 && (
+                {/* Food */}
+                {acceptedFoods.length > 0 && (
                     <div>
                         <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1.5">
-                            Food Requirements
+                            Food
                         </p>
-                        {foodNeeds.map((need, j) => (
-                            <div key={j} className="flex flex-wrap gap-1.5">
-                                {need.acceptedFoods.map((food, k) => (
-                                    <span
-                                        key={k}
-                                        className="inline-block rounded-md bg-green-50 border border-green-200 px-2 py-0.5 text-xs font-medium text-green-700"
-                                    >
-                                        {food.name}
-                                    </span>
-                                ))}
-                            </div>
-                        ))}
+                        <div className="flex flex-wrap gap-1.5">
+                            {acceptedFoods.map((food, k) => (
+                                <span
+                                    key={k}
+                                    className="inline-block rounded-md bg-green-50 border border-green-200 px-2 py-0.5 text-xs font-medium text-green-700"
+                                >
+                                    {food.name}
+                                </span>
+                            ))}
+                        </div>
                     </div>
                 )}
 

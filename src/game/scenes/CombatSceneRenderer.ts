@@ -14,7 +14,18 @@ export const PLAYER_X     = SCENE_W * 0.25;      // 960
 export const SPRITE_SCALE = 14;
 
 export const FIGHT_PLAYER_X = SCENE_W * 0.42;    // 1613
-export const FIGHT_ENEMY_X  = SCENE_W * 0.55;    // 2112
+export const FIGHT_ENEMY_X  = SCENE_W * 0.65;    // 2496
+
+// Absolute X for left-side (backward) attack — left of player (FIGHT_PLAYER_X = 0.42)
+const FIGHT_ENEMY_X_LEFT = SCENE_W * 0.20;   // 768
+
+// Per-direction enemy attack positions (x, y offsets from FIGHT_ENEMY_X / GROUND_Y)
+const ATTACK_OFFSET: Record<AttackDirection, { x: number; y: number }> = {
+    [AttackDirection.RIGHT]: { x: 0,                                  y: 0    },  // forward — no change
+    [AttackDirection.UP]:    { x: 0,                                  y: -500 },  // high attack — raise enemy
+    [AttackDirection.DOWN]:  { x: 0,                                  y: 200  },  // low attack — lower enemy
+    [AttackDirection.LEFT]:  { x: FIGHT_ENEMY_X_LEFT - FIGHT_ENEMY_X, y: 0    },  // backward — left of player
+};
 
 export const ENEMY_SLOTS: { x: number; y: number }[] = [
     { x: SCENE_W * 0.60, y: GROUND_Y },          // slot 0 — left
@@ -270,6 +281,7 @@ export class CombatSceneRenderer {
 
         enemies.forEach((enemy, i) => {
             if (!enemy?.sprite) return;
+            enemy.sprite.setFlipX(true);
             if (i === frontEnemyIndex) {
                 enemy.sprite.setAlpha(1);
                 this.setEnemyVisible(i, true);
@@ -283,6 +295,19 @@ export class CombatSceneRenderer {
                 enemy.sprite.setAlpha(0);
                 this.setEnemyVisible(i, false);
             }
+        });
+    }
+
+    repositionEnemyForAttack(enemy: CombatSceneEnemyCharacter, direction: AttackDirection): void {
+        if (!enemy.sprite) return;
+        const offset = ATTACK_OFFSET[direction];
+        enemy.sprite.setFlipX(true);
+        this.scene.tweens.add({
+            targets:  enemy.sprite,
+            x:        FIGHT_ENEMY_X + offset.x,
+            y:        GROUND_Y      + offset.y,
+            duration: MOVE_DURATION,
+            ease:     'Power2',
         });
     }
 
@@ -307,9 +332,11 @@ export class CombatSceneRenderer {
                 enemy.sprite.setAlpha(1);
                 this.setEnemyVisible(i, true);
             }
+            enemy.sprite.setFlipX(true);
             this.scene.tweens.add({
                 targets:  enemy.sprite,
                 x:        slot.x,
+                y:        slot.y,   // reset Y in case repositionEnemyForAttack moved it
                 duration: MOVE_DURATION,
                 ease:     'Power2',
             });

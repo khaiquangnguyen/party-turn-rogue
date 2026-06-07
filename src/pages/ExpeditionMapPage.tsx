@@ -2,7 +2,6 @@ import { useState             } from 'react';
 import { useNavigate          } from 'react-router-dom';
 import { GameData             } from '../game/GameData.ts';
 import { CreatureStorage      } from '../game/CreatureStorage.ts';
-import { FoodNeed             } from '../data/Creature/FoodNeed.ts';
 import type { CreatureTemplate } from '../data/Creature/CreatureTemplate.ts';
 
 const STAGES      = 3;
@@ -50,7 +49,7 @@ export default function ExpeditionMapPage() {
 
     // Grand reward overlay — shown when expedition just completed and not yet claimed.
     if (grandReward && !rewardClaimed) {
-        const foodNeeds = grandReward.needs.filter((n): n is FoodNeed => n instanceof FoodNeed);
+        const acceptedFoods = grandReward.acceptableFoods;
         return (
             <div className="min-h-screen bg-gray-900 flex items-center justify-center">
                 <div className="bg-white rounded-2xl px-8 py-8 shadow-2xl flex flex-col items-center gap-6 w-full max-w-sm mx-4">
@@ -61,14 +60,18 @@ export default function ExpeditionMapPage() {
                     <div className="w-full rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 flex flex-col gap-3">
                         <p className="text-lg font-black text-amber-700 text-center">{grandReward.name}</p>
                         <p className="text-xs text-gray-500 text-center italic">
-                            {grandReward.personalities.join(' · ')}
+                            {grandReward.personalities.map(p => p.name).join(' · ')}
                         </p>
-                        {foodNeeds.length > 0 && (
+                        {acceptedFoods.length > 0 && (
                             <div>
-                                <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1">Food Requirements</p>
-                                {foodNeeds.map((n, i) => (
-                                    <p key={i} className="text-xs text-gray-600">{n.description}</p>
-                                ))}
+                                <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1">Food</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {acceptedFoods.map((food, i) => (
+                                        <span key={i} className="inline-block rounded-md bg-green-50 border border-green-200 px-2 py-0.5 text-xs font-medium text-green-700">
+                                            {food.name}
+                                        </span>
+                                    ))}
+                                </div>
                             </div>
                         )}
                         <div>

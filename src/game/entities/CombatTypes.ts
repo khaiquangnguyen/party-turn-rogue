@@ -69,6 +69,7 @@ export interface ActionResult {
 
 export enum QTEEventType {
     Parry       = 'Parry',
+    WrongBlock  = 'WrongBlock',
     Interrupted = 'Interrupted',
 }
 

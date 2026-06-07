@@ -39,6 +39,7 @@ export const Events = {
     COMBAT_V2_QTE_START:             'combat-v2-qte-start',
     COMBAT_V2_QTE_END:               'combat-v2-qte-end',
     COMBAT_V2_PARRY:                 'combat-v2-parry',
+    COMBAT_V2_WRONG_BLOCK:           'combat-v2-wrong-block',
     COMBAT_V2_PLAYER_HIT:            'combat-v2-player-hit',
     COMBAT_V2_INTERRUPTED:           'combat-v2-interrupted',
     COMBAT_V2_COUNTER_ATTACK:        'combat-v2-counter-attack',

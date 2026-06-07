@@ -22,7 +22,7 @@ export abstract class PlayableCharacter extends CharacterTemplate {
     constructor(config?: Partial<PlayableCharacterConfig>) {
         super({
             name:      'Player',
-            maxHealth: 100,
+            maxHealth: 60,
             maxEnergy: 60,
             speed:     12,
             attack:    10,

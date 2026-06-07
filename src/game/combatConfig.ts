@@ -4,7 +4,7 @@ export const CombatConfig = {
     inputLateWindow:   100,   // how late after the expected beat a press is accepted
 
     // Input phase rhythm strip
-    // 1 = nodes travel at exactly the declared timing distance; 2 = twice as fast (nodes start further right)
+    // 1 = normal speed; 4 = nodes arrive 4x faster from the same starting position (800ms gap becomes 200ms)
     inputPhaseSpeed:   2,
 
     maxCompanions: 1,

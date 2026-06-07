@@ -9,8 +9,6 @@ import {AttackDirection, CombatAction, MoveType} from '../game/entities/CombatTy
 import {COMBO_MOD_POOL} from '../data/ComboModPool';
 import {ExtraDamageWhenCrashIntoGround} from '../data/WorldMods/ExtraDamageWhenCrashIntoGround.ts';
 import {WorldMod} from '../data/WorldMods/WorldMod';
-import {ComboRule} from '../data/ComboRule/ComboRule.ts';
-import {DEFAULT_COMBO_RULES} from '../data/ComboRule/DefaultComboRules';
 import {GameData} from '../game/GameData';
 import {loadRunPrep, saveRunPrep} from '../game/RunPrepStorage';
 import {ExtraDamageOnAir} from "../data/WorldMods/ExtraDamageOnAir.ts";
@@ -84,8 +82,6 @@ export default function RunPreparePage() {
         return stored?.worldModifiers.length ? stored.worldModifiers : pickRandom(WORLD_MODIFIER_POOL, 2);
     });
 
-    const [comboRules] = useState<ComboRule[]>(() => [...DEFAULT_COMBO_RULES]);
-
     const [selectedMods, setSelectedMods] = useState<Set<number>>(() => new Set());
 
     const [selectedActions, setSelectedActions] = useState<Partial<Record<AttackDirection, CombatAction>>>(
@@ -131,15 +127,18 @@ export default function RunPreparePage() {
         return next;
     });
 
+    const companionsRequired = availableCreatures.length > 0;
+
     const canBegin =
         selectedMods.size === REQUIRED_MODS &&
-        selectedSpecials.size === REQUIRED_SPECIALS;
+        selectedSpecials.size === REQUIRED_SPECIALS &&
+        (!companionsRequired || selectedCompanions.size >= CombatConfig.maxCompanions);
 
     const handleBeginRun = () => {
         const runPrep = {
             worldModifiers,
             comboMods:          [...selectedMods].map(i => COMBO_MOD_POOL[i]),
-            comboRules,
+            comboRules:         [],
             actionsByDirection: selectedActions,
             specials:           [...selectedSpecials].map(i => GRAND_DANCER_SPECIAL_ACTIONS[i]),
             enemyMods:          [],
@@ -178,38 +177,16 @@ export default function RunPreparePage() {
 
                     {/* World Modifiers */}
                     <section>
-                        <SectionHeader label="World"/>
+                        <SectionHeader label="World" badge="unchangeable"/>
                         <div className="grid grid-cols-2 gap-4 mt-4">
                             {worldModifiers.map((mod, i) => (
                                 <div
                                     key={i}
                                     className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm"
                                 >
-                                    <p className="text-sm font-bold text-gray-900 mb-1">
-                                        {mod.title}
-                                    </p>
+                                    <p className="text-sm font-bold text-gray-900 mb-1">{mod.title}</p>
                                     <p className="text-xs text-gray-500 leading-relaxed">
                                         {mod.description}
-                                    </p>
-                                </div>
-                            ))}
-                        </div>
-                    </section>
-
-                    {/* Combo Rules */}
-                    <section>
-                        <SectionHeader label="Combo Rules"/>
-                        <div className="grid grid-cols-2 gap-4 mt-4">
-                            {comboRules.map((rule, i) => (
-                                <div
-                                    key={i}
-                                    className="bg-white border border-red-200 rounded-lg p-4 shadow-sm"
-                                >
-                                    <p className="text-sm font-bold text-red-700 mb-1">
-                                        {rule.title}
-                                    </p>
-                                    <p className="text-xs text-gray-500 leading-relaxed">
-                                        {rule.description}
                                     </p>
                                 </div>
                             ))}
@@ -223,6 +200,11 @@ export default function RunPreparePage() {
                             count={selectedMods.size}
                             required={REQUIRED_MODS}
                         />
+                        {selectedMods.size < REQUIRED_MODS && (
+                            <p className="inline-block mt-2 px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
+                                {REQUIRED_MODS - selectedMods.size} more required
+                            </p>
+                        )}
                         <div className="grid grid-cols-2 gap-3 mt-4">
                             {COMBO_MOD_POOL.map((mod, i) => {
                                 const selected = selectedMods.has(i);
@@ -294,6 +276,11 @@ export default function RunPreparePage() {
                             count={selectedSpecials.size}
                             required={REQUIRED_SPECIALS}
                         />
+                        {selectedSpecials.size < REQUIRED_SPECIALS && (
+                            <p className="inline-block mt-2 px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
+                                {REQUIRED_SPECIALS - selectedSpecials.size} more required
+                            </p>
+                        )}
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
                             {GRAND_DANCER_SPECIAL_ACTIONS.map((action, i) => {
                                 const selected = selectedSpecials.has(i);
@@ -328,6 +315,11 @@ export default function RunPreparePage() {
                                 count={selectedCompanions.size}
                                 required={CombatConfig.maxCompanions}
                             />
+                            {selectedCompanions.size < CombatConfig.maxCompanions && (
+                                <p className="inline-block mt-2 px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
+                                    {CombatConfig.maxCompanions - selectedCompanions.size} more required
+                                </p>
+                            )}
                             <div className="grid grid-cols-2 gap-3 mt-4">
                                 {availableCreatures.map((creature, i) => {
                                     const selected = selectedCompanions.has(i);
@@ -378,16 +370,21 @@ function SectionHeader({
                            label,
                            count,
                            required,
+                           badge,
                        }: {
-    label: string;
-    count?: number;
+    label:     string;
+    count?:    number;
     required?: number;
+    badge?:    string;
 }) {
     return (
         <div className="flex items-center gap-3">
             <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 shrink-0">
                 {label}
             </h2>
+            {badge && (
+                <span className="text-base font-bold text-blue-500 shrink-0">{badge}</span>
+            )}
             {required !== undefined && count !== undefined && (
                 <span
                     className={`text-xs font-mono shrink-0 ${count >= required ? 'text-amber-600' : 'text-gray-400'}`}>
@@ -422,7 +419,7 @@ function CompanionCard({
                 <div className="min-w-0">
                     <p className="text-sm font-bold text-gray-900">{creature.name}</p>
                     <p className="text-xs text-gray-400 italic mb-1.5">
-                        {creature.personalities.join(' · ')}
+                        {creature.personalities.map(p => p.name).join(' · ')}
                     </p>
                     <div className="flex flex-col gap-1">
                         {creature.supportPassives.map((p, j) => (

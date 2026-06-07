@@ -1,18 +1,20 @@
-import { CreatureTemplate, Gender, pickRandomPersonalities } from '../CreatureTemplate.ts';
-import { Need                      } from '../Need.ts';
+import { CreatureTemplate, CreatureConstructor, SpeciesGender, pickRandomPersonalities } from '../CreatureTemplate.ts';
 import { SupportPassive, NoEnergyConsumeChance, AirLightningStrike, SpeedIncrease } from '../SupportPassive.ts';
-import { FoodNeed                  } from '../FoodNeed.ts';
-import { EdibleLightning           } from '../Food.ts';
+import { Food, SpecialFood, EdibleLightning } from '../Food.ts';
+import { ThunderPhoenix               } from './ThunderPhoenix.ts';
+import { ALL_PERSONALITIES            } from '../Personality.ts';
 
 export class ThunderBird extends CreatureTemplate {
-    readonly name            = 'Thunder Bird';
-    readonly gender: Gender  = 'Unknown';
-    readonly gifUrl          = "https://img.pokemondb.net/sprites/black-white/anim/normal/zapdos.gif";
-    readonly personalities   = pickRandomPersonalities(['Bold', 'Volatile', 'Proud', 'Restless']);
-    readonly needs:           readonly Need[]           = [new FoodNeed([new EdibleLightning()])];
+    readonly name             = 'Thunder Bird';
+    readonly gender: SpeciesGender = 'Gendered';
+    readonly gifUrl           = "https://img.pokemondb.net/sprites/black-white/anim/normal/zapdos.gif";
+    readonly personalities    = pickRandomPersonalities(ALL_PERSONALITIES);
+    readonly acceptableFoods:    readonly Food[]        = [new EdibleLightning()];
+    readonly allowedSpecialFoods: readonly SpecialFood[] = [];
     readonly supportPassives: readonly SupportPassive[] = [
         new NoEnergyConsumeChance(),
         new AirLightningStrike(),
         new SpeedIncrease(),
     ];
+    readonly nextEvolution: CreatureConstructor | null = ThunderPhoenix;
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { animate } from 'animejs';
 import { useCreatureGif } from '../hooks/useCreatureGif';
 import { useNavigate } from 'react-router-dom';
 import { EventBus } from '../game/EventBus';
@@ -7,6 +8,8 @@ import { GameData } from '../game/GameData';
 import { AttackDirection, DancerCombatSpecialAction } from '../game/entities/CombatTypes';
 import { DEFAULT_COMBO_RULES } from '../data/ComboRule/DefaultComboRules';
 import { CombatConfig } from '../game/combatConfig';
+import { CombatFeatureFlags } from '../game/combatFeatureFlags';
+import { QTE_PARRY_WINDOW } from '../game/combatConstants';
 import type { CombatSceneV2 } from '../game/scenes/CombatSceneV2';
 import { saveRunPrep } from '../game/RunPrepStorage';
 import { ResourceStorage } from '../game/ResourceStorage';
@@ -108,6 +111,12 @@ interface ParryState {
     startedAt: number;
 }
 
+interface SwordState {
+    direction:       AttackDirection;
+    parryWindowStart: number;   // ms from mount when parry becomes allowed (= action.duration - QTE_PARRY_WINDOW)
+    startedAt:       number;
+}
+
 const DIR_KEYS: Record<AttackDirection, string> = {
     [AttackDirection.UP]:    'W',
     [AttackDirection.DOWN]:  'S',
@@ -137,6 +146,7 @@ export default function CombatUI() {
     const [rewardChoices,   setRewardChoices]   = useState<RewardChoice[]>([]);
     const [rhythm,       setRhythm]       = useState<RhythmState | null>(null);
     const [parry,        setParry]        = useState<ParryState | null>(null);
+    const [sword,        setSword]        = useState<SwordState | null>(null);
     const [turnAnnounce, setTurnAnnounce] = useState<{ text: string; isPlayer: boolean } | null>(null);
     const [comboLog,     setComboLog]     = useState<ComboEntry[]>([]);
     const [isPlannerMode,  setIsPlannerMode]  = useState(false);
@@ -146,8 +156,17 @@ export default function CombatUI() {
     const [feedback,     setFeedback]     = useState<{ text: string; color: string; id: number } | null>(null);
     const [inputPrompt,  setInputPrompt]  = useState<{ forcedDir: AttackDirection | null; plannedDir: AttackDirection | null } | null>(null);
     const [hitNumbers,   setHitNumbers]   = useState<{ id: number; damage: number; comboRating: number; atkMultiplier: number }[]>([]);
-    const [inputPhase,   setInputPhase]   = useState<InputPhaseState | null>(null);
-    const [executionIdx, setExecutionIdx] = useState(0);
+    const [inputPhase,      setInputPhase]      = useState<InputPhaseState | null>(null);
+    const [executionIdx,    setExecutionIdx]    = useState(0);
+    const [showInstructions, setShowInstructions] = useState(false);
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key.toLowerCase() === 't') setShowInstructions(v => !v);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
     const showFeedback = useCallback((text: string, color: string) => {
         setFeedback({ text, color, id: Date.now() });
@@ -315,11 +334,18 @@ export default function CombatUI() {
         };
         const onRhythmEnd = () => setRhythm(null);
 
+        // Sword mounts here — before QTE_START — so it can strike 30ms before parry window opens.
+        const onEnemyMoveStart = (data: { action: { direction: AttackDirection; duration: number } }) => {
+            const parryWindowStart = data.action.duration - QTE_PARRY_WINDOW;
+            setSword({ direction: data.action.direction, parryWindowStart, startedAt: performance.now() });
+        };
+
         const onQteStart = (data: { direction: AttackDirection; duration: number }) => {
             setParry({ ...data, startedAt: performance.now() });
         };
-        const onQteEnd       = () => setParry(null);
+        const onQteEnd = () => { setParry(null); setSword(null); };
         const onParry        = () => showFeedback('PARRY',          '#22c55e');
+        const onWrongBlock   = () => showFeedback('BLOCK',          '#f59e0b');
         const onPlayerHit    = () => showFeedback('HIT',            '#ef4444');
         const onCounterAtk   = () => showFeedback('COUNTER ATTACK', '#a855f7');
 
@@ -377,9 +403,11 @@ export default function CombatUI() {
         EventBus.on(Events.COMBAT_V2_ENDED,             onEnded);
         EventBus.on(Events.COMBAT_V2_RHYTHM_START,      onRhythmStart);
         EventBus.on(Events.COMBAT_V2_RHYTHM_END,        onRhythmEnd);
-        EventBus.on(Events.COMBAT_V2_QTE_START,      onQteStart);
-        EventBus.on(Events.COMBAT_V2_QTE_END,        onQteEnd);
+        EventBus.on(Events.COMBAT_V2_ENEMY_MOVE_START, onEnemyMoveStart);
+        EventBus.on(Events.COMBAT_V2_QTE_START,       onQteStart);
+        EventBus.on(Events.COMBAT_V2_QTE_END,         onQteEnd);
         EventBus.on(Events.COMBAT_V2_PARRY,          onParry);
+        EventBus.on(Events.COMBAT_V2_WRONG_BLOCK,    onWrongBlock);
         EventBus.on(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
         EventBus.on(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
         EventBus.on(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
@@ -398,9 +426,11 @@ export default function CombatUI() {
             EventBus.off(Events.COMBAT_V2_ENDED,             onEnded);
             EventBus.off(Events.COMBAT_V2_RHYTHM_START,      onRhythmStart);
             EventBus.off(Events.COMBAT_V2_RHYTHM_END,        onRhythmEnd);
-            EventBus.off(Events.COMBAT_V2_QTE_START,      onQteStart);
-            EventBus.off(Events.COMBAT_V2_QTE_END,        onQteEnd);
+            EventBus.off(Events.COMBAT_V2_ENEMY_MOVE_START, onEnemyMoveStart);
+            EventBus.off(Events.COMBAT_V2_QTE_START,       onQteStart);
+            EventBus.off(Events.COMBAT_V2_QTE_END,         onQteEnd);
             EventBus.off(Events.COMBAT_V2_PARRY,          onParry);
+            EventBus.off(Events.COMBAT_V2_WRONG_BLOCK,    onWrongBlock);
             EventBus.off(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
             EventBus.off(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
             EventBus.off(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
@@ -507,7 +537,7 @@ export default function CombatUI() {
                         nextPlannedDir={rhythm.nextPlannedDir}
                     />
                 ) : null}
-                {parry && (
+                {parry && !CombatFeatureFlags.HideEnemyAttackCircle && (
                     <ParryOverlay
                         key={parry.startedAt}
                         direction={parry.direction}
@@ -515,6 +545,15 @@ export default function CombatUI() {
                     />
                 )}
             </div>
+
+            {/* Sword strike animation — mounts on ENEMY_MOVE_START, strikes 30ms before parry window */}
+            {sword && (
+                <SwordStrikeOverlay
+                    key={sword.startedAt}
+                    direction={sword.direction}
+                    parryWindowStart={sword.parryWindowStart}
+                />
+            )}
 
             {/* Companion GIFs — rendered behind the player */}
             {companions.map((c, i) => c.gifUrl && (
@@ -527,6 +566,79 @@ export default function CombatUI() {
                     {hitNumbers.map((h, i) => (
                         <HitNumber key={h.id} damage={h.damage} comboRating={h.comboRating} atkMultiplier={h.atkMultiplier} index={i} />
                     ))}
+                </div>
+            )}
+
+            {/* Instructions button */}
+            <div className="absolute top-3 right-3 pointer-events-auto z-30">
+                <button
+                    onClick={() => setShowInstructions(v => !v)}
+                    className="px-2.5 py-1 text-xs font-bold uppercase tracking-widest bg-white/80 border border-gray-300 rounded-lg shadow hover:bg-white transition-colors text-gray-600"
+                >
+                    ? Instructions <span className="font-normal text-gray-400 normal-case">[T]</span>
+                </button>
+            </div>
+
+            {/* Instructions dialog */}
+            {showInstructions && (
+                <div
+                    className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-auto z-40"
+                    onClick={() => setShowInstructions(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 flex flex-col gap-5"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between">
+                            <p className="text-base font-black uppercase tracking-widest text-gray-800">How to Play</p>
+                            <button
+                                onClick={() => setShowInstructions(false)}
+                                className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+                            >✕</button>
+                        </div>
+
+                        {/* Planning phase */}
+                        <div className="flex flex-col gap-2">
+                            <p className="text-xs font-bold uppercase tracking-widest text-amber-600">Planning Phase</p>
+                            <div className="flex flex-col gap-1.5 text-sm text-gray-700 leading-snug">
+                                <p><span className="font-bold">W A S D</span> — queue an attack in that direction</p>
+                                <p><span className="font-bold">1 2 3 4</span> — use a special action (if available)</p>
+                                <p><span className="font-bold">← →</span> — cycle target between enemies</p>
+                                <p><span className="font-bold">Backspace</span> — undo last queued action</p>
+                                <p><span className="font-bold">Enter</span> — confirm plan and begin the input phase</p>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-gray-100" />
+
+                        {/* Input / execution phase */}
+                        <div className="flex flex-col gap-2">
+                            <p className="text-xs font-bold uppercase tracking-widest text-amber-600">Input Phase</p>
+                            <div className="flex flex-col gap-1.5 text-sm text-gray-700 leading-snug">
+                                <p>Nodes slide toward the hit zone — press the shown key as each node arrives to execute the action.</p>
+                                <p>Hitting on time scores a <span className="font-bold text-green-600">timed</span> hit for bonus combo rating; late/early still connects but scores less.</p>
+                            </div>
+                        </div>
+
+                        <div className="border-t border-gray-100" />
+
+                        {/* Parry */}
+                        <div className="flex flex-col gap-2">
+                            <p className="text-xs font-bold uppercase tracking-widest text-amber-600">Parry (Enemy Turn)</p>
+                            <div className="flex flex-col gap-1.5 text-sm text-gray-700 leading-snug">
+                                <p>The sword telegraphs the enemy's attack direction. Press the <span className="font-bold">matching W A S D</span> direction inside the parry window to block.</p>
+                                <p><span className="font-bold text-green-600">Correct direction + timing</span> = successful parry. Parry all attacks in a chain to perform a <span className="font-bold text-purple-600">counterstrike</span>.</p>
+                                <p><span className="font-bold text-amber-500">Wrong direction</span> but correct timing = <span className="font-bold">wrong block</span> — the hit is absorbed but the parry chain resets.</p>
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={() => setShowInstructions(false)}
+                            className="mt-1 w-full py-2 bg-amber-500 hover:bg-amber-400 text-white font-bold uppercase tracking-widest rounded-lg text-sm transition-colors"
+                        >
+                            Got it
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -888,49 +1000,253 @@ function ParryOverlay({ direction, duration }: { direction: AttackDirection; dur
     const SIZE          = (OUTER_R_START + PADDING) * 2;
     const CX            = SIZE / 2;
 
-    const [outerR, setOuterR] = useState(OUTER_R_START);
+    // How far the outer circle has shrunk when the parry window opens.
+    // Outer shrinks linearly: r(t) = OUTER_R_START * (1 - t/duration)
+    const parryOpenMs  = duration - QTE_PARRY_WINDOW;
+    const rAtParryOpen = OUTER_R_START * (QTE_PARRY_WINDOW / duration);
+
+    const [outerR,    setOuterR]    = useState(OUTER_R_START);
+    const [parryOpen, setParryOpen] = useState(false);
 
     useEffect(() => {
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                setOuterR(0);
-            });
-        });
-    }, []);
+        // Shrink outer circle to rAtParryOpen over the pre-window phase…
+        const raf = requestAnimationFrame(() => requestAnimationFrame(() => {
+            setOuterR(rAtParryOpen);
+        }));
+
+        // …then open parry window: switch to green and continue shrinking to 0
+        const t1 = setTimeout(() => {
+            setParryOpen(true);
+            setOuterR(0);
+        }, parryOpenMs);
+
+        return () => { cancelAnimationFrame(raf); clearTimeout(t1); };
+    }, [parryOpenMs, rAtParryOpen]);
+
+    const dangerColor = '#ef4444';
+    const readyColor  = '#22c55e';
+    const color       = parryOpen ? readyColor : dangerColor;
 
     return (
         <div className="w-full flex justify-center py-2 bg-black/5">
             <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-                {/* Shrinking outer circle */}
+                {/* Shrinking outer circle — red while winding up, green when parry opens */}
                 <circle
                     cx={CX} cy={CX}
                     r={outerR}
-                    fill="rgba(239,68,68,0.08)"
-                    stroke="#ef4444"
+                    fill={parryOpen ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'}
+                    stroke={color}
                     strokeWidth="8"
-                    style={{ transition: `r ${duration}ms linear` }}
+                    style={{
+                        transition: parryOpen
+                            ? `r ${QTE_PARRY_WINDOW}ms linear`
+                            : `r ${parryOpenMs}ms linear`,
+                    }}
                 />
                 {/* Fixed inner parry-zone circle */}
                 <circle
                     cx={CX} cy={CX} r={INNER_R}
-                    fill="rgba(239,68,68,0.12)"
-                    stroke="#ef4444"
+                    fill={parryOpen ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.12)'}
+                    stroke={color}
                     strokeWidth="4"
                     strokeDasharray="6 6"
+                    style={{ transition: 'fill 0.05s, stroke 0.05s' }}
                 />
                 {/* Direction arrow */}
-                <text
-                    x={CX}
-                    y={CX}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize="48"
-                    fontWeight="bold"
-                    fill="#1f2937"
-                >
-                    {PARRY_DIR_ARROW[direction]}
-                </text>
+                {!CombatFeatureFlags.HideEnemyAttackDirection && (
+                    <text
+                        x={CX} y={CX}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize="48"
+                        fontWeight="bold"
+                        fill="#1f2937"
+                    >
+                        {PARRY_DIR_ARROW[direction]}
+                    </text>
+                )}
             </svg>
+        </div>
+    );
+}
+
+// ── Sword strike overlay ──────────────────────────────────────────────────────
+//
+// Timing (all relative to component mount = ENEMY_MOVE_START):
+//   0 ms                    : sword appears, pull-back starts
+//   parryWindowStart - 100ms: pull-back ends, 50ms pause at full cock
+//   parryWindowStart - 50ms : strike fires  ← 50ms before parry window opens
+//   parryWindowStart        : parry window opens
+//
+// Positive angle = CW. transformOrigin = 'bottom center'.
+// UP/DOWN: rotation + vertical translation. RIGHT/LEFT: translation only (thrust).
+
+const SWORD_W              = 28;
+const SWORD_H              = 240;
+const GUARD_W              = 72;
+const GUARD_H              = 20;
+const STRIKE_DURATION      = 140;
+const PAUSE_MS             = 50;
+const STRIKE_BEFORE_PARRY  = 50;
+
+interface SwordCfg {
+    from:      number;   // initial blade rotation (deg)
+    pullBack:  number;   // cocked rotation (deg)
+    strike:    number;   // final rotation (deg)
+    windupTX:  number;   // group translateX during wind-up (px)
+    windupTY:  number;   // group translateY during wind-up (px)
+    strikeTX:  number;   // group translateX at strike end (absolute, px)
+    strikeTY:  number;   // group translateY at strike end (absolute, px)
+    groupLeft: string;
+    groupTop:  string;
+    scaleX:    1 | -1;  // -1 flips sword for "behind" attacks
+}
+
+const SWORD_DIR_CONFIG: Record<AttackDirection, SwordCfg> = {
+    // UP (W): pull-back 8→3 CW through 12 (240°→450°), move up; strike 3→6 CCW (450°→180°)
+    [AttackDirection.UP]: {
+        from: 240, pullBack: 450, strike: 180,
+        windupTX: 0, windupTY: -120,
+        strikeTX: 0, strikeTY: 0,
+        groupLeft: '50%', groupTop: `calc(50% - ${SWORD_H}px)`,
+        scaleX: 1,
+    },
+    // DOWN (S): pull-back 10→3 CCW through 6 (300°→90°), move down; strike 3→12 CW (90°→360°, arc through 6 and 9)
+    [AttackDirection.DOWN]: {
+        from: 300, pullBack: 90, strike: 360,
+        windupTX: 0, windupTY: 120,
+        strikeTX: 0, strikeTY: 0,
+        groupLeft: '50%', groupTop: `calc(40% - ${SWORD_H}px)`,
+        scaleX: 1,
+    },
+    // RIGHT (D) = forward: blade instantly at 9 o'clock (−90°), translate only
+    [AttackDirection.RIGHT]: {
+        from: -90, pullBack: -90, strike: -90,
+        windupTX: 300, windupTY: 0,
+        strikeTX: -80, strikeTY: 0,
+        groupLeft: '50%', groupTop: `calc(50% - ${SWORD_H}px)`,
+        scaleX: 1,
+    },
+    // LEFT (A) = backward: blade instantly at 3 o'clock (90°), at player's left side
+    [AttackDirection.LEFT]: {
+        from: 90, pullBack: 90, strike: 90,
+        windupTX: -300, windupTY: 0,
+        strikeTX: 80, strikeTY: 0,
+        groupLeft: '20%', groupTop: `calc(50% - ${SWORD_H}px)`,
+        scaleX: 1,
+    },
+};
+
+function SwordStrikeOverlay({ direction, parryWindowStart }: { direction: AttackDirection; parryWindowStart: number }) {
+    const groupRef = useRef<HTMLDivElement>(null);
+    const bladeRef = useRef<HTMLDivElement>(null);
+    const cfg      = SWORD_DIR_CONFIG[direction];
+
+    useEffect(() => {
+        const groupEl = groupRef.current;
+        const bladeEl = bladeRef.current;
+        if (!groupEl || !bladeEl) return;
+
+        const strikeStart  = parryWindowStart - STRIKE_BEFORE_PARRY;
+        const pullDuration = strikeStart - PAUSE_MS;
+        const hasRotation  = cfg.from !== cfg.pullBack;  // RIGHT/LEFT are translate-only
+
+        // Phase 1: pull-back — blade rotates (if applicable) and group translates
+        const pullBladeAnim = hasRotation
+            ? animate(bladeEl, {
+                rotate:   [`${cfg.from}deg`, `${cfg.pullBack}deg`],
+                duration: pullDuration,
+                ease:     'out(3)',
+              })
+            : null;
+        const pullGroupAnim = animate(groupEl, {
+            translateX: cfg.windupTX,
+            translateY: cfg.windupTY,
+            duration:   pullDuration,
+            ease:       'out(3)',
+        });
+
+        // Phase 2: strike after 50ms pause at full cock
+        const strikeTimer = setTimeout(() => {
+            if (hasRotation) {
+                animate(bladeEl, {
+                    rotate:   `${cfg.strike}deg`,
+                    duration: STRIKE_DURATION,
+                    ease:     'in(4)',
+                });
+            }
+            animate(groupEl, {
+                translateX: cfg.strikeTX,
+                translateY: cfg.strikeTY,
+                duration:   STRIKE_DURATION,
+                ease:       'in(4)',
+            });
+        }, strikeStart);
+
+        return () => {
+            pullBladeAnim?.cancel();
+            pullGroupAnim.cancel();
+            clearTimeout(strikeTimer);
+        };
+    }, [cfg, parryWindowStart]);
+
+    return (
+        <div
+            className="absolute pointer-events-none"
+            style={{ left: cfg.groupLeft, top: cfg.groupTop, transform: 'translateX(-50%)' }}
+        >
+            {/* Animated group: handles translation */}
+            <div ref={groupRef}>
+                {/* Blade: rotates around its bottom-center */}
+                <div
+                    ref={bladeRef}
+                        style={{
+                            width:           SWORD_W,
+                            height:          SWORD_H,
+                            transformOrigin: 'bottom center',
+                            transform:       `rotate(${cfg.from}deg)`,
+                            position:        'relative',
+                        }}
+                    >
+                        {/* Tip */}
+                        <div style={{
+                            position:  'absolute', top: 0, left: '50%',
+                            transform: 'translateX(-50%)',
+                            width:     SWORD_W, height: SWORD_H * 0.35,
+                            background: 'linear-gradient(to bottom, #e2e8f0, #94a3b8)',
+                            clipPath:  'polygon(20% 0%, 80% 0%, 100% 100%, 0% 100%)',
+                        }} />
+                        {/* Blade body */}
+                        <div style={{
+                            position: 'absolute', top: SWORD_H * 0.3, left: '50%',
+                            transform: 'translateX(-50%)',
+                            width: SWORD_W, height: SWORD_H * 0.45,
+                            backgroundColor: '#94a3b8',
+                            borderLeft: '2px solid #cbd5e1', borderRight: '2px solid #64748b',
+                        }} />
+                        {/* Crossguard */}
+                        <div style={{
+                            position: 'absolute', top: SWORD_H * 0.72, left: '50%',
+                            transform: 'translateX(-50%)',
+                            width: GUARD_W, height: GUARD_H,
+                            backgroundColor: '#78716c', borderRadius: 5,
+                        }} />
+                        {/* Handle */}
+                        <div style={{
+                            position: 'absolute', top: SWORD_H * 0.72 + GUARD_H, left: '50%',
+                            transform: 'translateX(-50%)',
+                            width: SWORD_W - 8, height: SWORD_H * 0.22,
+                            backgroundColor: '#292524', borderRadius: 3,
+                        }} />
+                        {/* Pommel */}
+                        <div style={{
+                            position: 'absolute', bottom: 0, left: '50%',
+                            transform: 'translateX(-50%)',
+                            width: SWORD_W + 4, height: SWORD_W + 4,
+                            backgroundColor: '#78716c', borderRadius: '50%',
+                        }} />
+                    </div>
+            </div>
         </div>
     );
 }
