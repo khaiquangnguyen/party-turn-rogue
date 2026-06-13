@@ -251,15 +251,13 @@ export class CombatSceneV2 extends Scene {
 
         const speed = CombatConfig.inputPhaseSpeed;
 
+        const schedule = this.buildInputSchedule(plannedActions, speed);
+
         EventBus.emit(Events.COMBAT_V2_INPUT_PHASE_START, {
-            initialDelayMs: (500 + INITIAL_INPUT_DELAY_MS) / speed,
-            moveSettleMs:   MOVE_SETTLE_MS / speed,
-            actionSettleMs: ACTION_SETTLE_MS / speed,
+            hitTimesMs: schedule.map(e => e.expectedTimeMs),
         });
 
-        await this.delay(500 / speed);
-
-        const schedule = this.buildInputSchedule(plannedActions, speed);
+        const sequenceStart = this.time.now;
 
         this.sceneRenderer.moveToCombatPositions(this.players, this.enemies, this._targetIndex);
         await this.delay(MOVE_SETTLE_MS / speed);
@@ -269,8 +267,6 @@ export class CombatSceneV2 extends Scene {
             earlyWindowMs: CombatConfig.inputEarlyWindow,
             lateWindowMs:  CombatConfig.inputLateWindow,
         });
-
-        const sequenceStart = this.time.now;
         const { inputEarlyWindow, inputLateWindow } = CombatConfig;
 
         const onKeyDown = (event: KeyboardEvent) => {

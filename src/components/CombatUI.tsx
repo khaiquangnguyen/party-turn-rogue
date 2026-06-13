@@ -99,10 +99,8 @@ interface RhythmState {
 }
 
 interface InputPhaseState {
-    initialDelayMs: number;
-    moveSettleMs:   number;
-    actionSettleMs: number;
-    startedAt:      number;
+    hitTimesMs: number[];
+    startedAt:  number;
 }
 
 interface ParryState {
@@ -416,8 +414,8 @@ export default function CombatUI() {
             setPhaseAnnounce({ text: 'Execute!', color: '#f59e0b' });
             setTimeout(() => setPhaseAnnounce(null), 900);
         };
-        const onInputPhaseStart = (data: { initialDelayMs: number; moveSettleMs: number; actionSettleMs: number }) => {
-            setInputPhase({ ...data, startedAt: performance.now() });
+        const onInputPhaseStart = (data: { hitTimesMs: number[] }) => {
+            setInputPhase({ hitTimesMs: data.hitTimesMs, startedAt: performance.now() });
         };
 
         EventBus.on(Events.CURRENT_SCENE_READY,            onSceneReady);
@@ -538,16 +536,15 @@ export default function CombatUI() {
                     isPlannerMode={isPlannerMode}
                     onSpecialSelect={i => EventBus.emit(Events.COMBAT_V2_SPECIAL_SELECTED, { index: i })}
                 />
-                {isPlannerMode
-                    ? <PlannerStrip
-                          log={plannerLog}
-                          maxSteps={plannerMax}
-                          stage={plannerStage}
-                          onConfirm={() => EventBus.emit(Events.COMBAT_V2_AUTO_COMBO_REQUEST)}
-                          onConfirmPlan={() => EventBus.emit(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST)}
-                      />
-                    : comboLog.length > 0 && <ComboLogStrip log={comboLog} />
-                }
+                {isPlannerMode && (
+                    <PlannerStrip
+                        log={plannerLog}
+                        maxSteps={plannerMax}
+                        stage={plannerStage}
+                        onConfirm={() => EventBus.emit(Events.COMBAT_V2_AUTO_COMBO_REQUEST)}
+                        onConfirmPlan={() => EventBus.emit(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST)}
+                    />
+                )}
                 {inputPrompt && !inputPhase && <PlayerInputPrompt forcedDir={inputPrompt.forcedDir} plannedDir={inputPrompt.plannedDir} />}
                 {feedback && (
                     <CombatFeedbackText
@@ -560,9 +557,7 @@ export default function CombatUI() {
                     <InputPhaseStrip
                         key={inputPhase.startedAt}
                         sequence={plannedSeqRef.current}
-                        initialDelayMs={inputPhase.initialDelayMs}
-                        moveSettleMs={inputPhase.moveSettleMs}
-                        actionSettleMs={inputPhase.actionSettleMs}
+                        hitTimesMs={inputPhase.hitTimesMs}
                         earlyWindowMs={CombatConfig.inputEarlyWindow}
                         lateWindowMs={CombatConfig.inputLateWindow}
                         executionIdx={executionIdx}
@@ -1510,9 +1505,7 @@ function BurstNode({ label }: { label: string }) {
 
 function InputPhaseStrip({
     sequence,
-    initialDelayMs,
-    moveSettleMs,
-    actionSettleMs,
+    hitTimesMs,
     earlyWindowMs,
     lateWindowMs,
     executionIdx,
@@ -1520,9 +1513,7 @@ function InputPhaseStrip({
     timedInputFlash,
 }: {
     sequence:        PlannerEntry[];
-    initialDelayMs:  number;
-    moveSettleMs:    number;
-    actionSettleMs:  number;
+    hitTimesMs:      number[];
     earlyWindowMs:   number;
     lateWindowMs:    number;
     executionIdx:    number;
@@ -1550,23 +1541,17 @@ function InputPhaseStrip({
     interface FlatNode { label: string; entryIdx: number; isSeqKey: boolean }
     const flatNodes: FlatNode[] = [];
     const hitTimes: number[] = [];
-    let firstEntryTransitionDone = false;
 
     for (let eIdx = 0; eIdx < sequence.length; eIdx++) {
         const entry = sequence[eIdx];
         const steps = entry.sequenceSteps;
+        const entryHitTime = hitTimesMs[eIdx] ?? 0;
 
         if (steps && steps.length > 0) {
             for (let sIdx = 0; sIdx < steps.length; sIdx++) {
                 flatNodes.push({ label: PARRY_DIR_ARROW[steps[sIdx].dir], entryIdx: eIdx, isSeqKey: true });
-
-                if (hitTimes.length === 0) {
-                    hitTimes.push(initialDelayMs);
-                } else if (sIdx === 0) {
-                    const prevEntry = sequence[eIdx - 1];
-                    const gap = (!firstEntryTransitionDone ? moveSettleMs : 0) + actionSettleMs + prevEntry.waitMs;
-                    hitTimes.push(hitTimes[hitTimes.length - 1] + gap);
-                    firstEntryTransitionDone = true;
+                if (sIdx === 0) {
+                    hitTimes.push(entryHitTime);
                 } else {
                     hitTimes.push(hitTimes[hitTimes.length - 1] + steps[sIdx - 1].waitMs);
                 }
@@ -1577,15 +1562,7 @@ function InputPhaseStrip({
                 entryIdx: eIdx,
                 isSeqKey: false,
             });
-
-            if (hitTimes.length === 0) {
-                hitTimes.push(initialDelayMs);
-            } else {
-                const prevEntry = sequence[eIdx - 1];
-                const gap = (!firstEntryTransitionDone ? moveSettleMs : 0) + actionSettleMs + prevEntry.waitMs;
-                hitTimes.push(hitTimes[hitTimes.length - 1] + gap);
-                firstEntryTransitionDone = true;
-            }
+            hitTimes.push(entryHitTime);
         }
     }
 
