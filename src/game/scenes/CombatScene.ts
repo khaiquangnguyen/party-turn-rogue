@@ -354,7 +354,6 @@ export class CombatScene extends Scene {
                 targets: this.playerContainer,
                 x: PLAYER_ATTACK_X, duration: 140, ease: 'Quad.easeIn',
                 onComplete: () => {
-                    this.player.energyManager.consume(action.energyCost);
                     const dealt = this.enemy.damage(action.damage);
 
                     this.playerSprite.play(phaserAnimKey);
@@ -491,7 +490,6 @@ export class CombatScene extends Scene {
         if (log !== undefined) this.combatLogText = log;
 
         const ph = this.player.healthManager;
-        const pe = this.player.energyManager;
         const eh = this.enemy.healthManager;
 
         const state: CombatState = {
@@ -499,8 +497,8 @@ export class CombatScene extends Scene {
             playerSpeed:    this.player.speed,
             playerHP:       ph.getCurrentHealth(),
             playerMaxHP:    ph.getMaxHealth(),
-            playerEN:       pe.getCurrentEnergy(),
-            playerMaxEN:    pe.getMaxEnergy(),
+            playerEN:       0,
+            playerMaxEN:    0,
             enemyName:      this.enemy.template.getName(),
             enemyType:      this.enemy.template.getEnemyType(),
             enemyLevel:     this.enemy.template.getLevel(),

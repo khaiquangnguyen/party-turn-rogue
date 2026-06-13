@@ -3,12 +3,12 @@ import {ComboStep} from "./ComboStep.ts";
 
 export class HitAndRun extends ComboMod {
     title          = 'Hit and Run';
-    description    = 'Ending your turn after exactly one hit earns +1 crowd rating.';
+    description    = 'Ending your turn after exactly one hit deals +8 bonus damage.';
     allowedClasses = [CharacterClass.GrandDancer];
 
     onComboEnd(turnSteps: readonly ComboStep[]): void {
         if (turnSteps.length === 1) {
-            turnSteps[0].comboStack.addComboRating(1);
+            turnSteps[0].finalDamage += 8;
         }
     }
 }

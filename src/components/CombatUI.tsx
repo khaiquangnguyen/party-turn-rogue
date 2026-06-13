@@ -23,11 +23,9 @@ import type { ComboMod } from '../data/ComboMod/ComboMod';
 // ── Snapshot / state types ────────────────────────────────────────────────────
 
 interface PlayerSnapshot {
-    name:      string;
-    hp:        number;
-    maxHp:     number;
-    energy:    number;
-    maxEnergy: number;
+    name:  string;
+    hp:    number;
+    maxHp: number;
 }
 
 interface ActionCardInfo {
@@ -38,8 +36,9 @@ interface ActionCardInfo {
 
 interface SpecialCardInfo {
     name:              string | null;
-    inputKey:          number | null;
+    inputSeq:          AttackDirection[] | null;
     ratingRequirement: number;
+    damage:            number;
 }
 
 interface ComboEntry {
@@ -51,13 +50,14 @@ interface ComboEntry {
 }
 
 interface PlannerEntry {
-    direction:    AttackDirection | null;
-    displayKey:   string;
-    name:         string;
-    damage:       number;
+    direction:     AttackDirection | null;
+    displayKey:    string;
+    name:          string;
+    damage:        number;
     atkMultiplier: number;
-    comboRating:  number;
-    waitMs:       number;
+    comboRating:   number;
+    waitMs:        number;
+    sequenceSteps?: { dir: AttackDirection; waitMs: number }[];
 }
 
 interface ComboModInfo {
@@ -152,13 +152,21 @@ export default function CombatUI() {
     const [isPlannerMode,  setIsPlannerMode]  = useState(false);
     const [plannerLog,     setPlannerLog]     = useState<PlannerEntry[]>([]);
     const [plannerMax,     setPlannerMax]     = useState(0);
+    const [plannerStage,   setPlannerStage]   = useState<'planning' | 'auto-combo' | null>(null);
     const [phaseAnnounce,  setPhaseAnnounce]  = useState<{ text: string; color: string } | null>(null);
     const [feedback,     setFeedback]     = useState<{ text: string; color: string; id: number } | null>(null);
     const [inputPrompt,  setInputPrompt]  = useState<{ forcedDir: AttackDirection | null; plannedDir: AttackDirection | null } | null>(null);
     const [hitNumbers,   setHitNumbers]   = useState<{ id: number; damage: number; comboRating: number; atkMultiplier: number }[]>([]);
     const [inputPhase,      setInputPhase]      = useState<InputPhaseState | null>(null);
     const [executionIdx,    setExecutionIdx]    = useState(0);
+    const [timedInputFlash,  setTimedInputFlash]  = useState(0);
     const [showInstructions, setShowInstructions] = useState(false);
+    const [dirTokens, setDirTokens] = useState<Record<AttackDirection, number>>({
+        [AttackDirection.UP]:    0,
+        [AttackDirection.DOWN]:  0,
+        [AttackDirection.LEFT]:  0,
+        [AttackDirection.RIGHT]: 0,
+    });
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -177,11 +185,9 @@ export default function CombatUI() {
         const p = sceneRef.current?.players[0];
         if (!p) return;
         setPlayer({
-            name:      p.template.getName(),
-            hp:        p.healthManager.getCurrentHealth(),
-            maxHp:     p.healthManager.getMaxHealth(),
-            energy:    p.energyManager.getCurrentEnergy(),
-            maxEnergy: p.energyManager.getMaxEnergy(),
+            name:  p.template.getName(),
+            hp:    p.healthManager.getCurrentHealth(),
+            maxHp: p.healthManager.getMaxHealth(),
         });
     }, []);
 
@@ -204,15 +210,12 @@ export default function CombatUI() {
                     dirKey:    DIR_KEYS[dir],
                     name:      deck.getAction(dir).name,
                 })));
-                const specs: SpecialCardInfo[] = [];
-                for (let i = 0; i < deck.specialSlotCount; i++) {
-                    const sp = deck.getSpecialAction(i);
-                    specs.push({
-                        name:              sp?.name ?? null,
-                        inputKey:          sp ? (i + 1) as 1 | 2 | 3 | 4 : null,
-                        ratingRequirement: sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0,
-                    });
-                }
+                const specs: SpecialCardInfo[] = deck.getAllSpecials().map(sp => ({
+                    name:              sp.name,
+                    inputSeq:          sp.input?.inputSequence ?? null,
+                    ratingRequirement: sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0,
+                    damage:            sp.damage,
+                }));
                 setSpecials(specs);
             }
 
@@ -243,8 +246,9 @@ export default function CombatUI() {
         const onTurnEnd   = () => {
             snapshot();
             setComboLog([]); setHitNumbers([]); setIsPlannerMode(false); setPlannerLog([]); setPhaseAnnounce(null);
-            setInputPhase(null); setExecutionIdx(0);
+            setInputPhase(null); setExecutionIdx(0); setPlannerStage(null as 'planning' | 'auto-combo' | null);
             plannedSeqRef.current = []; executionIdxRef.current = 0;
+            // dirTokens intentionally NOT reset here — unused tokens carry over to the next player turn
         };
         const onAttackStart = () => {
             setComboLog([]); setInputPrompt(null);
@@ -349,13 +353,18 @@ export default function CombatUI() {
         const onPlayerHit    = () => showFeedback('HIT',            '#ef4444');
         const onCounterAtk   = () => showFeedback('COUNTER ATTACK', '#a855f7');
 
-        const onPlannerStart = (data: { maxSteps: number }) => {
+        const onPlannerStart = (data: { maxSteps: number; tokenCounts: Record<AttackDirection, number> }) => {
             setIsPlannerMode(true);
             setPlannerLog([]);
             setPlannerMax(data.maxSteps);
             plannedSeqRef.current = [];
+            setDirTokens({ ...data.tokenCounts });
+            setPlannerStage(null);
             setPhaseAnnounce({ text: 'Planning Phase', color: '#0ea5e9' });
             setTimeout(() => setPhaseAnnounce(null), 1200);
+        };
+        const onPlannerStage = (data: { stage: 'planning' | 'auto-combo' }) => {
+            setPlannerStage(data.stage);
         };
         const onPlannerAction = (data: {
             action:          { name: string; input?: { inputDirection: AttackDirection | null; inputSpecialKey?: number | null } };
@@ -364,6 +373,8 @@ export default function CombatUI() {
             comboRating:     number;
             atkMultiplier:   number;
             waitMs:          number;
+            tokenCounts?:    Record<AttackDirection, number>;
+            sequenceSteps?:  { dir: AttackDirection; waitMs: number }[];
         }) => {
             const dir = data.action.input?.inputDirection ?? null;
             const entry: PlannerEntry = {
@@ -374,15 +385,30 @@ export default function CombatUI() {
                 atkMultiplier: data.atkMultiplier,
                 comboRating:   data.comboRating,
                 waitMs:        data.waitMs,
+                sequenceSteps: data.sequenceSteps,
             };
             setPlannerLog(prev => [...prev, entry]);
             plannedSeqRef.current = [...plannedSeqRef.current, entry];
             setComboRating(data.comboRating);
+            if (data.tokenCounts) {
+                setDirTokens({ ...data.tokenCounts });
+            } else if (dir !== null) {
+                setDirTokens(prev => ({ ...prev, [dir]: Math.max(0, (prev[dir] ?? 0) - 1) }));
+            }
         };
-        const onPlannerUndo = (data: { comboRating: number }) => {
+        const onPlannerUndo = (data: { comboRating: number; tokenCounts?: Record<AttackDirection, number> }) => {
+            const removed = plannedSeqRef.current[plannedSeqRef.current.length - 1];
             setPlannerLog(prev => prev.slice(0, -1));
             plannedSeqRef.current = plannedSeqRef.current.slice(0, -1);
             setComboRating(data.comboRating);
+            if (data.tokenCounts) {
+                setDirTokens({ ...data.tokenCounts });
+            } else {
+                const removedDir = removed?.direction ?? null;
+                if (removedDir !== null) {
+                    setDirTokens(prev => ({ ...prev, [removedDir]: (prev[removedDir] ?? 0) + 1 }));
+                }
+            }
         };
         const onPlannerEnd  = () => {
             setIsPlannerMode(false);
@@ -411,10 +437,13 @@ export default function CombatUI() {
         EventBus.on(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
         EventBus.on(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
         EventBus.on(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
+        EventBus.on(Events.COMBAT_V2_PLANNER_STAGE,     onPlannerStage);
         EventBus.on(Events.COMBAT_V2_PLANNER_ACTION,    onPlannerAction);
         EventBus.on(Events.COMBAT_V2_PLANNER_UNDO,      onPlannerUndo);
         EventBus.on(Events.COMBAT_V2_PLANNER_END,       onPlannerEnd);
         EventBus.on(Events.COMBAT_V2_INPUT_PHASE_START, onInputPhaseStart);
+        const onTimedInput = () => setTimedInputFlash(n => n + 1);
+        EventBus.on(Events.COMBAT_V2_TIMED_INPUT, onTimedInput);
 
         return () => {
             EventBus.off(Events.CURRENT_SCENE_READY,            onSceneReady);
@@ -434,10 +463,12 @@ export default function CombatUI() {
             EventBus.off(Events.COMBAT_V2_PLAYER_HIT,     onPlayerHit);
             EventBus.off(Events.COMBAT_V2_COUNTER_ATTACK, onCounterAtk);
             EventBus.off(Events.COMBAT_V2_PLANNER_START,     onPlannerStart);
+            EventBus.off(Events.COMBAT_V2_PLANNER_STAGE,     onPlannerStage);
             EventBus.off(Events.COMBAT_V2_PLANNER_ACTION,    onPlannerAction);
             EventBus.off(Events.COMBAT_V2_PLANNER_UNDO,      onPlannerUndo);
             EventBus.off(Events.COMBAT_V2_PLANNER_END,       onPlannerEnd);
             EventBus.off(Events.COMBAT_V2_INPUT_PHASE_START, onInputPhaseStart);
+            EventBus.off(Events.COMBAT_V2_TIMED_INPUT,       onTimedInput);
         };
     }, [snapshot, showFeedback]);
 
@@ -503,9 +534,18 @@ export default function CombatUI() {
                     comboRules={comboRules}
                     comboRating={comboRating}
                     companions={companions}
+                    dirTokens={dirTokens}
+                    isPlannerMode={isPlannerMode}
+                    onSpecialSelect={i => EventBus.emit(Events.COMBAT_V2_SPECIAL_SELECTED, { index: i })}
                 />
                 {isPlannerMode
-                    ? <PlannerStrip log={plannerLog} maxSteps={plannerMax} />
+                    ? <PlannerStrip
+                          log={plannerLog}
+                          maxSteps={plannerMax}
+                          stage={plannerStage}
+                          onConfirm={() => EventBus.emit(Events.COMBAT_V2_AUTO_COMBO_REQUEST)}
+                          onConfirmPlan={() => EventBus.emit(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST)}
+                      />
                     : comboLog.length > 0 && <ComboLogStrip log={comboLog} />
                 }
                 {inputPrompt && !inputPhase && <PlayerInputPrompt forcedDir={inputPrompt.forcedDir} plannedDir={inputPrompt.plannedDir} />}
@@ -527,6 +567,7 @@ export default function CombatUI() {
                         lateWindowMs={CombatConfig.inputLateWindow}
                         executionIdx={executionIdx}
                         startedAt={inputPhase.startedAt}
+                        timedInputFlash={timedInputFlash}
                     />
                 ) : rhythm ? (
                     <RhythmOverlay
@@ -601,11 +642,9 @@ export default function CombatUI() {
                         <div className="flex flex-col gap-2">
                             <p className="text-xs font-bold uppercase tracking-widest text-amber-600">Planning Phase</p>
                             <div className="flex flex-col gap-1.5 text-sm text-gray-700 leading-snug">
-                                <p><span className="font-bold">W A S D</span> — queue an attack in that direction</p>
-                                <p><span className="font-bold">1 2 3 4</span> — use a special action (if available)</p>
-                                <p><span className="font-bold">← →</span> — cycle target between enemies</p>
-                                <p><span className="font-bold">Backspace</span> — undo last queued action</p>
-                                <p><span className="font-bold">Enter</span> — confirm plan and begin the input phase</p>
+                                <p><span className="font-bold text-purple-600">Stage 1 — Special</span>: Click a highlighted special to use it, or press <span className="font-bold">Tab</span> to skip.</p>
+                                <p><span className="font-bold text-sky-600">Stage 2 — Auto Combo</span>: The best combo from remaining tokens is filled automatically. Press <span className="font-bold">Tab</span> to skip it, or <span className="font-bold">Enter</span> to confirm.</p>
+                                <p><span className="font-bold">← →</span> — cycle target between enemies (available in both stages)</p>
                             </div>
                         </div>
 
@@ -740,16 +779,20 @@ export default function CombatUI() {
 // ── Top info bar ──────────────────────────────────────────────────────────────
 
 function TopBar({
-    player, actions, specials, worldMods, comboMods, comboRules, comboRating, companions,
+    player, actions, specials, worldMods, comboMods, comboRules, comboRating, companions, dirTokens,
+    isPlannerMode, onSpecialSelect,
 }: {
-    player:      PlayerSnapshot;
-    actions:     ActionCardInfo[];
-    specials:    SpecialCardInfo[];
-    worldMods:   WorldModInfo[];
-    comboMods:   ComboModInfo[];
-    comboRules:  ComboRuleInfo[];
-    comboRating: number;
-    companions:  CompanionInfo[];
+    player:           PlayerSnapshot;
+    actions:          ActionCardInfo[];
+    specials:         SpecialCardInfo[];
+    worldMods:        WorldModInfo[];
+    comboMods:        ComboModInfo[];
+    comboRules:       ComboRuleInfo[];
+    comboRating:      number;
+    companions:       CompanionInfo[];
+    dirTokens:        Record<AttackDirection, number>;
+    isPlannerMode:    boolean;
+    onSpecialSelect?: (index: number) => void;
 }) {
     const hpPct = Math.max(0, (player.hp / player.maxHp) * 100);
 
@@ -760,7 +803,7 @@ function TopBar({
             <div className="flex-shrink-0 min-w-[160px]">
                 <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-0.5">Player</p>
                 <p className="text-sm font-bold text-gray-900 mb-2">{player.name}</p>
-                <div className="mb-2">
+                <div>
                     <div className="flex justify-between text-xs text-gray-500 mb-0.5">
                         <span>HP</span>
                         <span>{player.hp} / {player.maxHp}</span>
@@ -775,18 +818,6 @@ function TopBar({
                         />
                     </div>
                 </div>
-                <div className="flex gap-0.5 flex-wrap">
-                    {Array.from({ length: player.maxEnergy }).map((_, i) => (
-                        <div
-                            key={i}
-                            className={`w-3 h-3 rounded-full border transition-colors ${
-                                i < player.energy
-                                    ? 'bg-amber-400 border-amber-500'
-                                    : 'bg-gray-100 border-gray-200'
-                            }`}
-                        />
-                    ))}
-                </div>
             </div>
 
             <div className="w-px self-stretch bg-gray-200" />
@@ -795,12 +826,22 @@ function TopBar({
             <div className="flex-shrink-0">
                 <p className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1.5">Actions</p>
                 <div className="flex gap-1.5 flex-wrap">
-                    {actions.map(a => (
-                        <div key={a.dirKey} className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-center w-24">
-                            <span className="block text-xs font-bold text-amber-600 mb-0.5">[{a.dirKey}]</span>
-                            <span className="block text-xs text-gray-700 leading-tight">{a.name}</span>
-                        </div>
-                    ))}
+                    {actions.map(a => {
+                        const tokenCount = dirTokens[a.direction];
+                        return (
+                            <div key={a.dirKey} className="relative bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-center w-24">
+                                <span className={`absolute top-0.5 right-0.5 text-[10px] font-black w-4 h-4 flex items-center justify-center rounded-full leading-none ${
+                                    tokenCount > 0
+                                        ? 'bg-amber-500 text-white'
+                                        : 'bg-gray-200 text-gray-400'
+                                }`}>
+                                    {tokenCount}
+                                </span>
+                                <span className="block text-xs font-bold text-amber-600 mb-0.5">[{a.dirKey}]</span>
+                                <span className="block text-xs text-gray-700 leading-tight">{a.name}</span>
+                            </div>
+                        );
+                    })}
                 </div>
                 {specials.some(s => s.name) && (
                     <div className="mt-2">
@@ -808,25 +849,33 @@ function TopBar({
                         <div className="flex gap-1.5 flex-wrap">
                             {specials.map((s, i) => {
                                 if (!s.name) return null;
-                                const usable = comboRating >= s.ratingRequirement;
+                                const affordable = comboRating >= s.ratingRequirement;
+                                const clickable  = isPlannerMode && affordable;
+                                const seqLabel   = s.inputSeq
+                                    ? s.inputSeq.map(d => PARRY_DIR_ARROW[d]).join('')
+                                    : '?';
                                 return (
                                     <div
                                         key={i}
-                                        className={`rounded-lg px-2 py-1.5 text-center w-24 border transition-colors ${
-                                            usable
+                                        onClick={() => clickable && onSpecialSelect?.(i)}
+                                        className={`rounded-lg px-2 py-1.5 text-left w-28 border transition-colors ${
+                                            affordable
                                                 ? 'bg-purple-50 border-purple-500 shadow-[0_0_6px_rgba(168,85,247,0.4)]'
                                                 : 'bg-gray-50 border-gray-200 opacity-60'
-                                        }`}
+                                        } ${clickable ? 'pointer-events-auto cursor-pointer hover:bg-purple-100 active:bg-purple-200' : 'pointer-events-none'}`}
                                     >
                                         <div className="flex items-center justify-between mb-0.5">
-                                            <span className={`text-xs font-bold ${usable ? 'text-purple-600' : 'text-gray-400'}`}>
-                                                [{s.inputKey ?? '?'}]
+                                            <span className={`text-xs font-mono font-bold tracking-widest ${affordable ? 'text-purple-600' : 'text-gray-400'}`}>
+                                                {seqLabel}
                                             </span>
-                                            <span className={`text-xs font-bold ${usable ? 'text-amber-500' : 'text-gray-400'}`}>
+                                            <span className={`text-xs font-bold ${affordable ? 'text-amber-500' : 'text-gray-400'}`}>
                                                 ★{s.ratingRequirement}
                                             </span>
                                         </div>
-                                        <span className="block text-xs text-gray-700 leading-tight">{s.name}</span>
+                                        <div className="flex items-center justify-between">
+                                            <span className="block text-xs text-gray-700 leading-tight">{s.name}</span>
+                                            <span className={`text-xs font-bold ${affordable ? 'text-red-500' : 'text-gray-400'}`}>~{s.damage}</span>
+                                        </div>
                                     </div>
                                 );
                             })}
@@ -1418,6 +1467,47 @@ const NODE_R     = 26;
 const TRACK_W    = 740;
 const TRACK_H    = 80;
 
+function BurstNode({ label }: { label: string }) {
+    const [scale,   setScale]   = useState(1);
+    const [opacity, setOpacity] = useState(1);
+
+    useEffect(() => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                setScale(2.6);
+                setOpacity(0);
+            });
+        });
+    }, []);
+
+    return (
+        <div style={{
+            position:        'absolute',
+            left:            HIT_X - NODE_R,
+            top:             TRACK_H / 2 - NODE_R,
+            width:           NODE_R * 2,
+            height:          NODE_R * 2,
+            borderRadius:    '50%',
+            backgroundColor: 'rgba(34,197,94,0.85)',
+            border:          '3px solid #16a34a',
+            display:         'flex',
+            alignItems:      'center',
+            justifyContent:  'center',
+            transform:       `scale(${scale})`,
+            opacity,
+            transition:      'transform 0.42s ease-out, opacity 0.42s ease-out',
+            zIndex:          10,
+            pointerEvents:   'none',
+            color:           'white',
+            fontWeight:      900,
+            fontSize:        NODE_R * 0.9,
+            userSelect:      'none',
+        }}>
+            {label}
+        </div>
+    );
+}
+
 function InputPhaseStrip({
     sequence,
     initialDelayMs,
@@ -1427,18 +1517,24 @@ function InputPhaseStrip({
     lateWindowMs,
     executionIdx,
     startedAt,
+    timedInputFlash,
 }: {
-    sequence:       PlannerEntry[];
-    initialDelayMs: number;
-    moveSettleMs:   number;
-    actionSettleMs: number;
-    earlyWindowMs:  number;
-    lateWindowMs:   number;
-    executionIdx:   number;
-    startedAt:      number;
+    sequence:        PlannerEntry[];
+    initialDelayMs:  number;
+    moveSettleMs:    number;
+    actionSettleMs:  number;
+    earlyWindowMs:   number;
+    lateWindowMs:    number;
+    executionIdx:    number;
+    startedAt:       number;
+    timedInputFlash: number;
 }) {
     const [elapsed, setElapsed] = useState(0);
     const rafRef = useRef<number>(0);
+    const [bursts,    setBursts]    = useState<{ id: number; label: string }[]>([]);
+    const burstIdRef        = useRef(0);
+    const flatNodesRef      = useRef<{ label: string; entryIdx: number; isSeqKey: boolean }[]>([]);
+    const flatExecIdxRef    = useRef(0);
 
     useEffect(() => {
         const origin = startedAt;
@@ -1450,15 +1546,65 @@ function InputPhaseStrip({
         return () => cancelAnimationFrame(rafRef.current);
     }, [startedAt]);
 
-    // expected press time for each node, relative to strip startedAt
+    // Build flat node list — specials expand into one node per sequence key.
+    interface FlatNode { label: string; entryIdx: number; isSeqKey: boolean }
+    const flatNodes: FlatNode[] = [];
     const hitTimes: number[] = [];
-    if (sequence.length > 0) {
-        hitTimes[0] = initialDelayMs;
-        for (let i = 1; i < sequence.length; i++) {
-            const gap = (i === 1 ? moveSettleMs : 0) + actionSettleMs + (sequence[i - 1].waitMs ?? 0);
-            hitTimes[i] = hitTimes[i - 1] + gap;
+    let firstEntryTransitionDone = false;
+
+    for (let eIdx = 0; eIdx < sequence.length; eIdx++) {
+        const entry = sequence[eIdx];
+        const steps = entry.sequenceSteps;
+
+        if (steps && steps.length > 0) {
+            for (let sIdx = 0; sIdx < steps.length; sIdx++) {
+                flatNodes.push({ label: PARRY_DIR_ARROW[steps[sIdx].dir], entryIdx: eIdx, isSeqKey: true });
+
+                if (hitTimes.length === 0) {
+                    hitTimes.push(initialDelayMs);
+                } else if (sIdx === 0) {
+                    const prevEntry = sequence[eIdx - 1];
+                    const gap = (!firstEntryTransitionDone ? moveSettleMs : 0) + actionSettleMs + prevEntry.waitMs;
+                    hitTimes.push(hitTimes[hitTimes.length - 1] + gap);
+                    firstEntryTransitionDone = true;
+                } else {
+                    hitTimes.push(hitTimes[hitTimes.length - 1] + steps[sIdx - 1].waitMs);
+                }
+            }
+        } else {
+            flatNodes.push({
+                label:    entry.direction !== null ? PARRY_DIR_ARROW[entry.direction] : entry.displayKey,
+                entryIdx: eIdx,
+                isSeqKey: false,
+            });
+
+            if (hitTimes.length === 0) {
+                hitTimes.push(initialDelayMs);
+            } else {
+                const prevEntry = sequence[eIdx - 1];
+                const gap = (!firstEntryTransitionDone ? moveSettleMs : 0) + actionSettleMs + prevEntry.waitMs;
+                hitTimes.push(hitTimes[hitTimes.length - 1] + gap);
+                firstEntryTransitionDone = true;
+            }
         }
     }
+
+    // First flat-node index that hasn't been executed yet.
+    const flatExecutionIdx = flatNodes.filter(n => n.entryIdx < executionIdx).length;
+
+    // Keep refs current so the burst useEffect can read them without stale closures.
+    flatNodesRef.current   = flatNodes;
+    flatExecIdxRef.current = flatExecutionIdx;
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => {
+        if (timedInputFlash === 0) return;
+        const node = flatNodesRef.current[flatExecIdxRef.current];
+        if (!node) return;
+        const id = burstIdRef.current++;
+        setBursts(prev => [...prev, { id, label: node.label }]);
+        setTimeout(() => setBursts(prev => prev.filter(b => b.id !== id)), 600);
+    }, [timedInputFlash]);
 
     const pxPerMs = BASE_PX_PER_MS * CombatConfig.inputPhaseSpeed;
     const earlyPx = earlyWindowMs * pxPerMs;
@@ -1480,8 +1626,8 @@ function InputPhaseStrip({
                     {/* Timing window highlight */}
                     <div style={{
                         position:        'absolute',
-                        left:            HIT_X - earlyPx,
-                        width:           earlyPx + latePx,
+                        left:            HIT_X - latePx,
+                        width:           latePx + earlyPx,
                         top:             TRACK_H / 2 - 8,
                         height:          16,
                         backgroundColor: 'rgba(34,197,94,0.35)',
@@ -1501,14 +1647,14 @@ function InputPhaseStrip({
                         zIndex:          1,
                     }} />
 
-                    {/* Nodes */}
-                    {sequence.map((entry, i) => {
-                        if (i < executionIdx) return null;
-                        const x       = HIT_X + (hitTimes[i] - elapsed) * pxPerMs;
-                        const isCurr  = i === executionIdx;
-                        const isNear  = Math.abs(x - HIT_X) < NODE_R * 3;
+                    {/* Flat nodes */}
+                    {flatNodes.map((node, i) => {
+                        if (i < flatExecutionIdx) return null;
+                        const x      = HIT_X + (hitTimes[i] - elapsed) * pxPerMs;
+                        const isCurr = i === flatExecutionIdx;
+                        const isNear = Math.abs(x - HIT_X) < NODE_R * 3;
 
-                        if (x > TRACK_W + NODE_R * 2) return null; // off right edge
+                        if (x > TRACK_W + NODE_R * 2) return null;
 
                         return (
                             <div
@@ -1520,8 +1666,8 @@ function InputPhaseStrip({
                                     width:           NODE_R * 2,
                                     height:          NODE_R * 2,
                                     borderRadius:    '50%',
-                                    border:          `3px solid ${isCurr ? '#f59e0b' : '#6b7280'}`,
-                                    backgroundColor: isCurr ? '#fef3c7' : '#f3f4f6',
+                                    border:          `3px solid ${isCurr ? '#f59e0b' : node.isSeqKey ? '#a855f7' : '#6b7280'}`,
+                                    backgroundColor: isCurr ? '#fef3c7' : node.isSeqKey ? '#faf5ff' : '#f3f4f6',
                                     display:         'flex',
                                     alignItems:      'center',
                                     justifyContent:  'center',
@@ -1531,19 +1677,19 @@ function InputPhaseStrip({
                                 }}
                             >
                                 <span style={{
-                                    fontSize:   entry.direction !== null ? '1.1rem' : '1rem',
+                                    fontSize:   '1.1rem',
                                     fontWeight: 900,
-                                    color:      isCurr ? '#92400e' : '#374151',
+                                    color:      isCurr ? '#92400e' : node.isSeqKey ? '#7e22ce' : '#374151',
                                     lineHeight: 1,
                                     userSelect: 'none',
                                 }}>
-                                    {entry.direction !== null
-                                        ? PARRY_DIR_ARROW[entry.direction]
-                                        : entry.displayKey}
+                                    {node.label}
                                 </span>
                             </div>
                         );
                     })}
+
+                    {bursts.map(b => <BurstNode key={b.id} label={b.label} />)}
                 </div>
             </div>
         </div>
@@ -1552,49 +1698,83 @@ function InputPhaseStrip({
 
 // ── Planner strip ─────────────────────────────────────────────────────────────
 
-function PlannerStrip({ log, maxSteps }: { log: PlannerEntry[]; maxSteps: number }) {
-    const totalDamage = log.reduce((sum, e) => sum + e.damage, 0);
-    const isFull      = log.length >= maxSteps;
+
+function PlannerStrip({
+    log, maxSteps, stage, onConfirm, onConfirmPlan,
+}: {
+    log:           PlannerEntry[];
+    maxSteps:      number;
+    stage:         'planning' | 'auto-combo' | null;
+    onConfirm:     () => void;
+    onConfirmPlan: () => void;
+}) {
+    const totalDamage  = log.reduce((sum, e) => sum + e.damage, 0);
+    const isFull       = log.length >= maxSteps;
+    const hasAutoCombo = stage === 'auto-combo';
 
     return (
-        <div className="bg-sky-50/95 border-b border-sky-300 flex items-center gap-2 px-4 py-2 overflow-x-auto">
-            <div className="flex-shrink-0 flex flex-col items-start mr-1">
-                <span className="text-xs font-bold uppercase tracking-widest text-sky-600">Plan</span>
-                <span className={`text-xs font-bold tabular-nums ${isFull ? 'text-red-500' : 'text-sky-400'}`}>
-                    {log.length}/{maxSteps}
-                </span>
-            </div>
+        <div className="bg-sky-50/95 border-b border-sky-300 flex flex-col">
 
-            {log.length === 0 ? (
-                <span className="text-xs text-sky-400 italic">Press WASD to plan your combo…</span>
-            ) : (
-                log.map((entry, i) => (
-                    <div
-                        key={i}
-                        className="flex-shrink-0 rounded-lg border border-sky-200 bg-white text-xs overflow-hidden"
-                    >
-                        {/* Header row: key + name */}
-                        <div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1">
-                            <span className="font-bold text-sky-600">[{entry.displayKey}]</span>
-                            <span className="font-medium text-gray-800">{entry.name}</span>
-                        </div>
-                        {/* Stats row */}
-                        <div className="flex items-center gap-0 border-t border-sky-100 divide-x divide-sky-100">
-                            <span className="px-2 py-1 font-bold text-red-500 bg-red-50/60">~{entry.damage}</span>
-                            <span className="px-2 py-1 font-bold text-green-600 bg-green-50/60">×{entry.atkMultiplier.toFixed(2)}</span>
-                            <span className="px-2 py-1 font-bold text-amber-600 bg-amber-50/60">★{entry.comboRating}</span>
-                        </div>
-                    </div>
-                ))
-            )}
-
-            {log.length > 0 && (
-                <div className="ml-auto flex-shrink-0 bg-red-50 border border-red-200 rounded-lg px-3 py-1 text-xs font-bold text-red-500">
-                    ~{totalDamage} total
+            {/* Plan log row */}
+            <div className="flex items-center gap-2 px-4 py-2 overflow-x-auto">
+                <div className="flex-shrink-0 flex flex-col items-start mr-1">
+                    <span className="text-xs font-bold uppercase tracking-widest text-sky-600">Plan</span>
+                    <span className={`text-xs font-bold tabular-nums ${isFull ? 'text-red-500' : 'text-sky-400'}`}>
+                        {log.length}/{maxSteps}
+                    </span>
                 </div>
-            )}
 
-            <span className="flex-shrink-0 text-xs text-sky-400 ml-2">[Enter] confirm · [Del/Esc] undo</span>
+                {log.length === 0 ? (
+                    <span className="text-xs text-sky-400 italic">
+                        Click a special or press [Tab] for auto-combo…
+                    </span>
+                ) : (
+                    log.map((entry, i) => (
+                        <div
+                            key={i}
+                            className="flex-shrink-0 rounded-lg border border-sky-200 bg-white text-xs overflow-hidden"
+                        >
+                            <div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1">
+                                <span className="font-bold text-sky-600">[{entry.displayKey}]</span>
+                                <span className="font-medium text-gray-800">{entry.name}</span>
+                            </div>
+                            <div className="flex items-center gap-0 border-t border-sky-100 divide-x divide-sky-100">
+                                <span className="px-2 py-1 font-bold text-red-500 bg-red-50/60">~{entry.damage}</span>
+                                <span className="px-2 py-1 font-bold text-green-600 bg-green-50/60">×{entry.atkMultiplier.toFixed(2)}</span>
+                                <span className="px-2 py-1 font-bold text-amber-600 bg-amber-50/60">★{entry.comboRating}</span>
+                            </div>
+                        </div>
+                    ))
+                )}
+
+                {log.length > 0 && (
+                    <div className="ml-auto flex-shrink-0 bg-red-50 border border-red-200 rounded-lg px-3 py-1 text-xs font-bold text-red-500">
+                        ~{totalDamage} total
+                    </div>
+                )}
+
+                <div className="flex-shrink-0 flex items-center gap-2 ml-2">
+                    {!hasAutoCombo ? (
+                        <button
+                            onClick={onConfirm}
+                            className="px-2.5 py-1 text-xs font-bold uppercase tracking-widest rounded border border-sky-400 text-sky-600 bg-sky-100 hover:bg-sky-200 active:bg-sky-300 transition-colors pointer-events-auto"
+                            title="Auto-fill best combo [Tab]"
+                        >
+                            Auto [Tab]
+                        </button>
+                    ) : (
+                        <>
+                            <span className="text-xs text-sky-400">[Del] clear auto</span>
+                            <button
+                                onClick={onConfirmPlan}
+                                className="px-2.5 py-1 text-xs font-bold uppercase tracking-widest rounded border border-amber-400 text-amber-600 bg-amber-50 hover:bg-amber-100 transition-colors pointer-events-auto"
+                            >
+                                Confirm [Enter]
+                            </button>
+                        </>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }

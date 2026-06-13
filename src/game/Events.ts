@@ -23,15 +23,21 @@ export const Events = {
     COMBAT_V2_PLAYER_INPUT_PROMPT:   'combat-v2-player-input-prompt',
     COMBAT_V2_PLAYER_ATTACK_START:   'combat-v2-player-attack-start',
     COMBAT_V2_PLAYER_ACTION_END:     'combat-v2-player-action-end',
+    COMBAT_V2_TIMED_INPUT:           'combat-v2-timed-input',
     COMBAT_V2_RHYTHM_START:          'combat-v2-rhythm-start',
     COMBAT_V2_RHYTHM_END:            'combat-v2-rhythm-end',
     COMBAT_V2_INPUT_PHASE_START:     'combat-v2-input-phase-start',
+    COMBAT_V2_SCHEDULE_START:        'combat-v2-schedule-start',
 
     // ── V2 combat — planner ───────────────────────────────────────────────────
     COMBAT_V2_PLANNER_START:         'combat-v2-planner-start',
     COMBAT_V2_PLANNER_ACTION:        'combat-v2-planner-action',
     COMBAT_V2_PLANNER_UNDO:          'combat-v2-planner-undo',
     COMBAT_V2_PLANNER_END:           'combat-v2-planner-end',
+    COMBAT_V2_AUTO_COMBO_REQUEST:    'combat-v2-auto-combo-request',
+    COMBAT_V2_PLANNER_STAGE:          'combat-v2-planner-stage',
+    COMBAT_V2_SPECIAL_SELECTED:       'combat-v2-special-selected',
+    COMBAT_V2_PLANNER_CONFIRM_REQUEST:'combat-v2-planner-confirm-request',
 
     // ── V2 combat — enemy ─────────────────────────────────────────────────────
     COMBAT_V2_ENEMY_ATTACK_START:    'combat-v2-enemy-attack-start',

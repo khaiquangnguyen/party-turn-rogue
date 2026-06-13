@@ -24,7 +24,8 @@ const STORAGE_KEY = 'party-turn-rogue:run-prep';
 
 const COMBO_MOD_REGISTRY: Record<string, () => ComboMod> = {
     ForceAirborne:   () => new ForceAirborne(),
-    GroundSlamRating: () => new Slammer(),
+    GroundSlamRating: () => new Slammer(),  // legacy key
+    Slammer:          () => new Slammer(),
     AmateurDancer:   () => new AmateurDancer(),
     Amateur:         () => new AmateurDancer(),   // backward-compat for old saves
     ComboMaster:     () => new ComboMaster(),

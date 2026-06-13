@@ -3,7 +3,7 @@ import {ComboStep} from "./ComboStep.ts";
 
 export class AmateurDancer extends ComboMod {
     title          = 'Amateur Dancer';
-    description    = 'Hitting with the same move 3 times in a row earns +1 crowd rating.';
+    description    = 'Hitting with the same move 3 times in a row deals +5 bonus damage.';
     allowedClasses = [CharacterClass.GrandDancer];
 
     onBeforeAction(step: ComboStep, history: readonly ComboStep[]): boolean {
@@ -20,7 +20,7 @@ export class AmateurDancer extends ComboMod {
         }
 
         if (consecutive === 2) {
-            step.comboStack.addComboRating(1);
+            step.comboStack.extraDamage += 5;
             return true;
         }
         return false;

@@ -29,19 +29,29 @@ export interface ICombatTarget {
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 
+export type SequenceStep = { key: AttackDirection; waitMs: number };
+
 export type ActionInputKey =
     | { type: 'direction'; direction: AttackDirection }
-    | { type: 'special';   key: 1 | 2 | 3 | 4 };
+    | { type: 'special';   key: 1 | 2 | 3 | 4 }
+    | { type: 'sequence';  steps: SequenceStep[] };
 
 export class CombatActionInput {
     readonly waitTillNextInputDuration: number;
     private readonly _spec: ActionInputKey;
 
-    constructor(waitTillNextInputDuration: number, input: AttackDirection | ActionInputKey) {
-        this.waitTillNextInputDuration = waitTillNextInputDuration;
-        this._spec = typeof input === 'number'
-            ? { type: 'direction', direction: input as AttackDirection }
-            : input;
+    // Direction / special-key form:  new CombatActionInput(waitMs, direction | inputKey)
+    // Sequence form:                 new CombatActionInput(steps)  — last step's waitMs is used as the post-action gap
+    constructor(waitOrSteps: number | SequenceStep[], input?: AttackDirection | ActionInputKey) {
+        if (Array.isArray(waitOrSteps)) {
+            this._spec = { type: 'sequence', steps: waitOrSteps };
+            this.waitTillNextInputDuration = waitOrSteps[waitOrSteps.length - 1]?.waitMs ?? 0;
+        } else {
+            this.waitTillNextInputDuration = waitOrSteps;
+            this._spec = typeof input === 'number'
+                ? { type: 'direction', direction: input as AttackDirection }
+                : input as ActionInputKey;
+        }
     }
 
     get inputDirection(): AttackDirection | null {
@@ -50,6 +60,16 @@ export class CombatActionInput {
 
     get inputSpecialKey(): (1 | 2 | 3 | 4) | null {
         return this._spec.type === 'special' ? this._spec.key : null;
+    }
+
+    // Keys only — used for sequence matching (findBySequence / hasPartialSequence)
+    get inputSequence(): AttackDirection[] | null {
+        return this._spec.type === 'sequence' ? this._spec.steps.map(s => s.key) : null;
+    }
+
+    // Full steps with per-key wait durations
+    get inputSequenceSteps(): SequenceStep[] | null {
+        return this._spec.type === 'sequence' ? this._spec.steps : null;
     }
 }
 

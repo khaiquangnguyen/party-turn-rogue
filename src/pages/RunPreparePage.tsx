@@ -5,7 +5,7 @@ import {
     GRAND_DANCER_BASIC_ACTIONS_2,
     GRAND_DANCER_SPECIAL_ACTIONS
 } from '../characters/GrandDancer/GrandDancerCombatActions.ts';
-import {AttackDirection, CombatAction, MoveType} from '../game/entities/CombatTypes';
+import {AttackDirection, CombatAction, MoveType, DancerCombatSpecialAction} from '../game/entities/CombatTypes';
 import {COMBO_MOD_POOL} from '../data/ComboModPool';
 import {ExtraDamageWhenCrashIntoGround} from '../data/WorldMods/ExtraDamageWhenCrashIntoGround.ts';
 import {WorldMod} from '../data/WorldMods/WorldMod';
@@ -55,7 +55,14 @@ function pickRandom<T>(pool: T[], n: number): T[] {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const REQUIRED_MODS = 1;
-const REQUIRED_SPECIALS = 4;
+const MAX_SPECIALS  = 50;
+
+const DIR_ARROW: Record<AttackDirection, string> = {
+    [AttackDirection.UP]:    '↑',
+    [AttackDirection.DOWN]:  '↓',
+    [AttackDirection.LEFT]:  '←',
+    [AttackDirection.RIGHT]: '→',
+};
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -99,12 +106,15 @@ export default function RunPreparePage() {
 
     const [selectedSpecials, setSelectedSpecials] = useState<Set<number>>(() => {
         const stored = loadRunPrep();
-        if (!stored) return new Set();
-        return new Set(
-            stored.specials
-                .map(s => GRAND_DANCER_SPECIAL_ACTIONS.findIndex(a => a.name === s.name))
-                .filter(i => i >= 0),
-        );
+        if (stored?.specials.length) {
+            return new Set(
+                stored.specials
+                    .map(s => GRAND_DANCER_SPECIAL_ACTIONS.findIndex(a => a.name === s.name))
+                    .filter(i => i >= 0),
+            );
+        }
+        // Default: select all available specials
+        return new Set(GRAND_DANCER_SPECIAL_ACTIONS.map((_, i) => i));
     });
 
     const toggleMod = (i: number) => setSelectedMods(prev => {
@@ -121,7 +131,7 @@ export default function RunPreparePage() {
         const next = new Set(prev);
         if (next.has(i)) {
             next.delete(i);
-        } else if (next.size < REQUIRED_SPECIALS) {
+        } else if (next.size < MAX_SPECIALS) {
             next.add(i);
         }
         return next;
@@ -131,7 +141,6 @@ export default function RunPreparePage() {
 
     const canBegin =
         selectedMods.size === REQUIRED_MODS &&
-        selectedSpecials.size === REQUIRED_SPECIALS &&
         (!companionsRequired || selectedCompanions.size >= CombatConfig.maxCompanions);
 
     const handleBeginRun = () => {
@@ -152,8 +161,6 @@ export default function RunPreparePage() {
     const missing: string[] = [];
     if (selectedMods.size < REQUIRED_MODS)
         missing.push(`${REQUIRED_MODS - selectedMods.size} combo mod${REQUIRED_MODS - selectedMods.size > 1 ? 's' : ''}`);
-    if (selectedSpecials.size < REQUIRED_SPECIALS)
-        missing.push(`${REQUIRED_SPECIALS - selectedSpecials.size} special${REQUIRED_SPECIALS - selectedSpecials.size > 1 ? 's' : ''}`);
 
     return (
         <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col">
@@ -273,18 +280,15 @@ export default function RunPreparePage() {
                     <section>
                         <SectionHeader
                             label="Specials"
-                            count={selectedSpecials.size}
-                            required={REQUIRED_SPECIALS}
+                            badge={`${selectedSpecials.size} / ${GRAND_DANCER_SPECIAL_ACTIONS.length} selected`}
                         />
-                        {selectedSpecials.size < REQUIRED_SPECIALS && (
-                            <p className="inline-block mt-2 px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
-                                {REQUIRED_SPECIALS - selectedSpecials.size} more required
-                            </p>
-                        )}
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
                             {GRAND_DANCER_SPECIAL_ACTIONS.map((action, i) => {
                                 const selected = selectedSpecials.has(i);
-                                const locked = !selected && selectedSpecials.size >= REQUIRED_SPECIALS;
+                                const locked   = !selected && selectedSpecials.size >= MAX_SPECIALS;
+                                const seq      = action.input?.inputSequence ?? [];
+                                const rating   = action instanceof DancerCombatSpecialAction
+                                    ? action.ratingRequirement : 0;
                                 return (
                                     <SelectableCard
                                         key={action.name}
@@ -295,8 +299,11 @@ export default function RunPreparePage() {
                                         <p className="text-sm font-bold text-gray-900">
                                             {action.name}
                                         </p>
+                                        <p className="text-xs font-mono text-purple-600 mt-1 tracking-widest">
+                                            {seq.map(d => DIR_ARROW[d]).join(' ')}
+                                        </p>
                                         <p className="text-xs text-gray-500 mt-1">
-                                            {action.damage} dmg
+                                            {action.damage} dmg · ★{rating}
                                         </p>
                                         <p className="text-xs text-gray-400 mt-0.5">
                                             {action.moveTypes.map(t => MoveType[t]).join(' · ')}

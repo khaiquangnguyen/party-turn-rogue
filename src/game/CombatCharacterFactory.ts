@@ -76,11 +76,7 @@ export function buildCombatInitData(runPrep: RunPrepData): CombatSceneV2InitData
 
     const actionDeck = ActionDeck.create(dirActions.length === 4 ? dirActions : GRAND_DANCER_BASIC_ACTIONS);
 
-    runPrep.specials.forEach((special, i) => {
-        if (i < actionDeck.specialSlotCount) {
-            actionDeck.setSpecialAction(i, special);
-        }
-    });
+    runPrep.specials.forEach(special => actionDeck.addSpecial(special));
 
     const comboModDeck = new ComboModDeck();
     for (const mod of runPrep.comboMods) {

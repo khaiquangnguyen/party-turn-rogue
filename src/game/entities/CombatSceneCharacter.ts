@@ -3,7 +3,6 @@ import { CharacterTemplate } from './CharacterTemplate';
 import { PlayableCharacter } from './PlayableCharacter';
 import { EnemyCharacter } from './EnemyCharacter';
 import { HealthManager } from './HealthManager';
-import { IEnergyManager, ManaEnergy } from './EnergyManager';
 import { CombatEffect, ICombatTarget } from './CombatTypes';
 import { Airborne } from './CombatEffects';
 import { ActionDeck } from '../../data/ActionDeck.ts';
@@ -32,7 +31,6 @@ export abstract class CombatSceneCharacter implements ICombatTarget {
     activeEffects: Map<Function, CombatEffect> = new Map();
 
     readonly healthManager: HealthManager;
-    readonly energyManager: IEnergyManager;
     hasActedThisRound = false;
 
     get isAirborne(): boolean {
@@ -41,7 +39,6 @@ export abstract class CombatSceneCharacter implements ICombatTarget {
 
     constructor(template: CharacterTemplate) {
         this.healthManager = new HealthManager(template.maxHealth);
-        this.energyManager = new ManaEnergy(template.maxEnergy, 0);
     }
 
     get speed():   number  { return this.template.stats.speed; }

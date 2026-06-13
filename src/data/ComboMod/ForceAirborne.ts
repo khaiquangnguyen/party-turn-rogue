@@ -5,7 +5,7 @@ import {ComboStep} from "./ComboStep.ts";
 
 export class ForceAirborne extends ComboMod {
     title          = 'Force Airborne';
-    description    = 'Pressing UP immediately after DOWN launches the enemy airborne and earns +1 crowd rating.';
+    description    = 'Pressing UP immediately after DOWN launches the enemy airborne and deals +5 bonus damage.';
     allowedClasses = [CharacterClass.GrandDancer];
 
     onAfterAction(step: ComboStep, history: readonly ComboStep[]): boolean {
@@ -14,7 +14,7 @@ export class ForceAirborne extends ComboMod {
         const previousIsDown = prev?.action.input?.inputDirection === AttackDirection.DOWN;
         if (currentIsUp && previousIsDown) {
             step.activeEffects.set(Airborne, new Airborne());
-            step.comboStack.addComboRating(1);
+            step.comboStack.extraDamage += 5;
             return true;
         }
         return false;

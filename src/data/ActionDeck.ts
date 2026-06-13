@@ -7,16 +7,15 @@ const ALL_DIRECTIONS: readonly AttackDirection[] = [
     AttackDirection.RIGHT,
 ];
 
-const ACTION_DECK_SIZE   = ALL_DIRECTIONS.length;
-const SPECIAL_SLOT_COUNT = 4;
+const ACTION_DECK_SIZE = ALL_DIRECTIONS.length;
 
 export class ActionDeck {
-    private slots:        Map<AttackDirection, CombatAction>;
-    private specialSlots: Array<CombatAction | null>;
+    private slots:   Map<AttackDirection, CombatAction>;
+    private _specials: CombatAction[];
 
     private constructor(slots: Map<AttackDirection, CombatAction>) {
-        this.slots        = slots;
-        this.specialSlots = Array(SPECIAL_SLOT_COUNT).fill(null);
+        this.slots    = slots;
+        this._specials = [];
     }
 
     static create(actions: readonly CombatAction[]): ActionDeck {
@@ -68,34 +67,62 @@ export class ActionDeck {
         return ALL_DIRECTIONS.map(dir => this.slots.get(dir)!);
     }
 
-    // ── Special slots ─────────────────────────────────────────────────────────
+    // ── Special actions (sequence-based) ──────────────────────────────────────
+
+    addSpecial(action: CombatAction): void {
+        this._specials.push(action);
+    }
+
+    getAllSpecials(): readonly CombatAction[] {
+        return this._specials;
+    }
+
+    /**
+     * Returns the special whose input sequence matches the longest suffix of `buffer`,
+     * or null if no complete match. Prefers longer sequences when multiple match.
+     */
+    findBySequence(buffer: AttackDirection[]): CombatAction | null {
+        let best: CombatAction | null = null;
+        let bestLen = 0;
+        for (const sp of this._specials) {
+            const seq = sp.input?.inputSequence;
+            if (!seq || seq.length > buffer.length || seq.length <= bestLen) continue;
+            const suffix = buffer.slice(-seq.length);
+            if (suffix.every((d, i) => d === seq[i])) {
+                bestLen = seq.length;
+                best    = sp;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Returns true if any suffix of `buffer` is a strict prefix of any special's sequence
+     * (i.e., there's still a possible sequence in progress).
+     */
+    hasPartialSequence(buffer: AttackDirection[]): boolean {
+        for (const sp of this._specials) {
+            const seq = sp.input?.inputSequence;
+            if (!seq) continue;
+            for (let start = 0; start < buffer.length; start++) {
+                const tail = buffer.slice(start);
+                if (tail.length < seq.length && tail.every((d, i) => d === seq[i])) return true;
+            }
+        }
+        return false;
+    }
+
+    // ── Legacy slot API (kept for backward-compat reads) ─────────────────────
 
     getSpecialAction(index: number): CombatAction | null {
-        this.assertSpecialIndex(index);
-        return this.specialSlots[index];
+        return this._specials[index] ?? null;
     }
 
     setSpecialAction(index: number, action: CombatAction): void {
-        this.assertSpecialIndex(index);
-        this.specialSlots[index] = action;
-    }
-
-    clearSpecialAction(index: number): void {
-        this.assertSpecialIndex(index);
-        this.specialSlots[index] = null;
-    }
-
-    getSpecialByKey(key: 1 | 2 | 3 | 4): CombatAction | null {
-        return this.specialSlots[key - 1] ?? null;
+        this._specials[index] = action;
     }
 
     get specialSlotCount(): number {
-        return SPECIAL_SLOT_COUNT;
-    }
-
-    private assertSpecialIndex(index: number): void {
-        if (index < 0 || index >= SPECIAL_SLOT_COUNT) {
-            throw new Error(`Special slot index ${index} is out of range (0–${SPECIAL_SLOT_COUNT - 1}).`);
-        }
+        return this._specials.length;
     }
 }

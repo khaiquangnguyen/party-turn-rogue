@@ -23,6 +23,7 @@ import {calculateStepDamage} from "../../data/Combo.ts";
 import {ComboStep} from "../../data/ComboMod/ComboStep.ts";
 import {ComboMod} from "../../data/ComboMod/ComboMod.ts";
 import {DancerCombatSpecialAction} from "../entities/CombatTypes.ts";
+import {findBestComboFromTokens} from "../../data/AutoComboCalculator.ts";
 import type {SupportPassive} from "../../data/Creature/SupportPassive.ts";
 
 // ── Input map ─────────────────────────────────────────────────────────────────
@@ -41,14 +42,17 @@ const DIR_DISPLAY: Record<AttackDirection, string> = {
     [AttackDirection.RIGHT]: 'D',
 };
 
-type TimedInputResult =
-    | { kind: 'dir';     direction: AttackDirection; timed: boolean }
-    | { kind: 'special'; action: CombatAction };
+interface ScheduledInput {
+    expectedTimeMs: number
+    action:         CombatAction
+    resolved:       boolean
+    timed:          boolean
+}
 
-const ENERGY_PER_TURN       = 2;
-const MOVE_SETTLE_MS        = 420;
-const IDLE_RETURN_MS        = 200;
-const ACTION_SETTLE_MS      = 500;
+const TOKENS_PER_TURN        = 4;
+const MOVE_SETTLE_MS         = 210;
+const IDLE_RETURN_MS         = 100;
+const ACTION_SETTLE_MS       = 250;
 const INITIAL_INPUT_DELAY_MS = 1000;
 
 // ── Init data ─────────────────────────────────────────────────────────────────
@@ -74,6 +78,14 @@ export class CombatSceneV2 extends Scene {
     // Last direction the enemy attacked with — used by ForceFollowLastEnemyInput.
     // Null means no enemy has acted yet (or enemy just died): free input allowed.
     private lastEnemyInputDir: AttackDirection | null = null;
+
+    // Tokens not spent during the previous planning phase carry over to the next player turn.
+    private carryoverTokenCounts: Record<AttackDirection, number> = {
+        [AttackDirection.UP]:    0,
+        [AttackDirection.DOWN]:  0,
+        [AttackDirection.LEFT]:  0,
+        [AttackDirection.RIGHT]: 0,
+    };
 
     // Index into this.enemies for the currently selected target.
     private _targetIndex = 0;
@@ -113,16 +125,17 @@ export class CombatSceneV2 extends Scene {
     }
 
     create(): void {
+        this.carryoverTokenCounts = {
+            [AttackDirection.UP]:    0,
+            [AttackDirection.DOWN]:  0,
+            [AttackDirection.LEFT]:  0,
+            [AttackDirection.RIGHT]: 0,
+        };
         this.worldMods        = GameData.getRunPrep()?.worldModifiers ?? [];
         this.comboRules       = DEFAULT_COMBO_RULES;
         this.creaturePassives = (GameData.getRunPrep()?.companions ?? []).flatMap(c => c.supportPassives);
         this.sceneRenderer = new CombatSceneRenderer(this);
         this.sceneRenderer.setup(this.players, this.enemies);
-
-        // Give players their starting energy pool
-        for (const p of this.players) {
-            p.energyManager.restore(ENERGY_PER_TURN);
-        }
 
         const all: CombatSceneCharacter[] = [...this.players, ...this.enemies];
         this.turnManager = new CombatRoundTurnOrderManager(all);
@@ -153,11 +166,6 @@ export class CombatSceneV2 extends Scene {
 
             const actor = this.turnManager.getCurrentActor();
             if (!actor) return;
-
-            // Restore energy at the moment the turn is announced so the UI shows it immediately
-            if (actor.isPlayer) {
-                (actor as CombatScenePlayableCharacter).energyManager.restore(ENERGY_PER_TURN);
-            }
 
             EventBus.emit(Events.COMBAT_V2_TURN_START, {
                 actor,
@@ -232,7 +240,14 @@ export class CombatSceneV2 extends Scene {
         const forcedDir: AttackDirection | null =
             CombatFeatureFlags.ForceFollowLastEnemyInput ? this.lastEnemyInputDir : null;
 
-        await this.waitForPlannerInput(actor, mods, passives, forcedDir);
+        const newTokens = this.generateTokens();
+        const mergedCounts: Record<AttackDirection, number> = { ...this.carryoverTokenCounts };
+        for (const t of newTokens) mergedCounts[t]++;
+        const { carryoverTokenCounts, plannedActions } =
+            await this.waitForPlannerInput(actor, mods, passives, forcedDir, mergedCounts);
+        this.carryoverTokenCounts = carryoverTokenCounts;
+
+        if (plannedActions.length === 0) return;
 
         const speed = CombatConfig.inputPhaseSpeed;
 
@@ -244,51 +259,68 @@ export class CombatSceneV2 extends Scene {
 
         await this.delay(500 / speed);
 
-        // ratingPool carries the combo rating through the turn; specials deduct from it
+        const schedule = this.buildInputSchedule(plannedActions, speed);
+
+        this.sceneRenderer.moveToCombatPositions(this.players, this.enemies, this._targetIndex);
+        await this.delay(MOVE_SETTLE_MS / speed);
+
+        EventBus.emit(Events.COMBAT_V2_SCHEDULE_START, {
+            schedule:     schedule.map(e => ({ expectedTimeMs: e.expectedTimeMs, action: e.action })),
+            earlyWindowMs: CombatConfig.inputEarlyWindow,
+            lateWindowMs:  CombatConfig.inputLateWindow,
+        });
+
+        const sequenceStart = this.time.now;
+        const { inputEarlyWindow, inputLateWindow } = CombatConfig;
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            const dir = WASD_MAP[event.key.toUpperCase()];
+            if (dir === undefined) return;
+            event.preventDefault();
+
+            const elapsed = this.time.now - sequenceStart;
+            for (const entry of schedule) {
+                if (!entry.resolved &&
+                    elapsed >= entry.expectedTimeMs - inputEarlyWindow &&
+                    elapsed <= entry.expectedTimeMs + inputLateWindow) {
+                    entry.resolved = true;
+                    entry.timed    = true;
+                    this.cameras.main.shake(350, 0.008);
+                    EventBus.emit(Events.COMBAT_V2_TIMED_INPUT);
+                    break;
+                }
+            }
+        };
+        this.input.keyboard!.on('keydown', onKeyDown);
+
         let ratingPool = this.comboHistory.length > 0
             ? this.comboHistory[this.comboHistory.length - 1].comboStack.comboRating
             : 0;
 
-        const lookupSpecial = (key: 1 | 2 | 3 | 4): CombatAction | null => {
-            const sp = actor.actionDeck.getSpecialByKey(key);
-            if (!sp) return null;
-            if (sp instanceof DancerCombatSpecialAction && ratingPool < sp.ratingRequirement) return null;
-            return sp;
-        };
-
-        const firstInput = await this.waitForNextTimedInput(INITIAL_INPUT_DELAY_MS / speed, lookupSpecial);
-        if (!firstInput) return;
-        let nextInput: TimedInputResult = firstInput;
-
         const turnStartIndex = this.comboHistory.length;
 
         if (turnStartIndex === 0) {
-            for (const mod     of mods)    mod.onComboStart(this.comboHistory);
+            for (const mod     of mods)     mod.onComboStart(this.comboHistory);
             for (const wm      of this.worldMods) wm.onComboStart(this.comboHistory);
             for (const passive of passives) passive.onComboStart(this.comboHistory);
         }
 
         EventBus.emit(Events.COMBAT_V2_PLAYER_ATTACK_START, { actor, target });
 
-        this.sceneRenderer.moveToCombatPositions(this.players, this.enemies, this._targetIndex);
-        await this.delay(MOVE_SETTLE_MS / speed);
+        for (const entry of schedule) {
+            if (!target.isAlive) break;
 
-        let isFirstAction = true;
+            const elapsed  = this.time.now - sequenceStart;
+            const waitLeft = entry.expectedTimeMs - elapsed;
+            if (waitLeft > 0) await this.delay(waitLeft);
 
-        while (target.isAlive) {
-            if (actor.energyManager.getCurrentEnergy() <= 0) break;
-            if (!isFirstAction) actor.energyManager.consume(1);
-            isFirstAction = false;
+            if (!entry.resolved) {
+                entry.resolved = true;
+            }
 
-            // Resolve action from direction key or special key
-            let action: CombatAction;
-            if (nextInput.kind === 'special') {
-                action = nextInput.action;
-                if (action instanceof DancerCombatSpecialAction) {
-                    ratingPool = Math.max(0, ratingPool - action.ratingRequirement);
-                }
-            } else {
-                action = actor.actionDeck.getAction(nextInput.direction);
+            const action = entry.action;
+            if (action instanceof DancerCombatSpecialAction) {
+                ratingPool = Math.max(0, ratingPool - action.ratingRequirement);
             }
 
             const prev = this.comboHistory[this.comboHistory.length - 1] ?? null;
@@ -335,114 +367,180 @@ export class CombatSceneV2 extends Scene {
             });
 
             this.comboHistory.push(step);
-
             await this.delay(ACTION_SETTLE_MS / speed);
-
-            if (actor.energyManager.getCurrentEnergy() <= 0) break;
-
-            const waitMs = action.input?.waitTillNextInputDuration ?? 0;
-            const next   = await this.waitForNextTimedInput(waitMs / speed, lookupSpecial);
-            if (!next) break;
-
-            nextInput = next;
         }
 
+        this.input.keyboard!.off('keydown', onKeyDown);
+
         const turnSteps = this.comboHistory.slice(turnStartIndex);
-        for (const mod     of mods)    mod.onComboEnd(turnSteps);
+        for (const mod     of mods)     mod.onComboEnd(turnSteps);
         for (const wm      of this.worldMods) wm.onComboEnd(turnSteps);
         for (const passive of passives) passive.onComboEnd(turnSteps);
     }
 
+    private buildInputSchedule(plannedActions: CombatAction[], speed: number): ScheduledInput[] {
+        const schedule: ScheduledInput[] = [];
+        let t = INITIAL_INPUT_DELAY_MS / speed;
+
+        for (let i = 0; i < plannedActions.length; i++) {
+            schedule.push({
+                expectedTimeMs: t,
+                action:         plannedActions[i],
+                resolved:       false,
+                timed:          false,
+            });
+            if (i < plannedActions.length - 1) {
+                t += ACTION_SETTLE_MS / speed;
+                t += (plannedActions[i].input?.waitTillNextInputDuration ?? 0) / speed;
+            }
+        }
+        return schedule;
+    }
+
     private waitForPlannerInput(
-        actor:          CombatScenePlayableCharacter,
-        mods:           readonly ComboMod[],
-        passives:       readonly SupportPassive[],
-        forcedFirstDir: AttackDirection | null,
-    ): Promise<void> {
+        actor:              CombatScenePlayableCharacter,
+        mods:               readonly ComboMod[],
+        passives:           readonly SupportPassive[],
+        forcedFirstDir:     AttackDirection | null,
+        initialTokenCounts: Record<AttackDirection, number>,
+    ): Promise<{ carryoverTokenCounts: Record<AttackDirection, number>; plannedActions: CombatAction[] }> {
         const simulatedHistory: ComboStep[] = [...this.comboHistory];
-        const maxSteps = 1 + actor.energyManager.getCurrentEnergy();
+        const initialHistoryLength = simulatedHistory.length;
+        const tokenCounts: Record<AttackDirection, number> = { ...initialTokenCounts };
+        const maxSteps = Object.values(tokenCounts).reduce((a, b) => a + b, 0);
 
         this.correctTargetIndex();
         this.sceneRenderer.setTargetSelection(this._targetIndex, this.enemies);
 
-        EventBus.emit(Events.COMBAT_V2_PLANNER_START, { maxSteps });
-
-        // Tracks available combo rating for special requirements during planning
         let simRatingPool = this.comboHistory.length > 0
             ? this.comboHistory[this.comboHistory.length - 1].comboStack.comboRating
             : 0;
-        // Snapshot of simRatingPool before each planned step, for undo
-        const ratingPoolHistory: number[] = [];
 
-        // Auto-place the forced first direction immediately
-        if (forcedFirstDir !== null) {
-            ratingPoolHistory.push(simRatingPool);
-            simRatingPool = this.addSimulatedStep(
-                actor, mods, passives, actor.actionDeck.getAction(forcedFirstDir), simulatedHistory, simRatingPool,
-            );
+        type UndoEntry =
+            | { kind: 'auto';    undo: () => void }
+            | { kind: 'special'; undo: () => void; action: CombatAction };
+
+        const undoStack: UndoEntry[] = [];
+        let autoComboUndoCount = 0;
+
+        // Pre-compute auto-combo once from the initial token snapshot.
+        // Specials don't consume tokens, so this result never changes during planning.
+        const previewTokens = { ...tokenCounts };
+        if (forcedFirstDir !== null && previewTokens[forcedFirstDir] > 0) {
+            previewTokens[forcedFirstDir]--;
         }
-        const lockedCount = forcedFirstDir !== null ? 1 : 0;
+        const cachedBestSeq = findBestComboFromTokens(
+            previewTokens, actor.actionDeck, mods, this.worldMods, this.comboRules, passives,
+        );
 
-        return new Promise(resolve => {
+        EventBus.emit(Events.COMBAT_V2_PLANNER_START, { maxSteps, tokenCounts: { ...tokenCounts } });
+        EventBus.emit(Events.COMBAT_V2_PLANNER_STAGE, { stage: 'planning' });
+
+        // ── Step appliers ─────────────────────────────────────────────────────
+
+        const addDirStep = (dir: AttackDirection): boolean => {
+            if (tokenCounts[dir] <= 0) return false;
+            const prevRating = simRatingPool;
+            tokenCounts[dir]--;
+            simRatingPool = this.addSimulatedStep(
+                actor, mods, passives, actor.actionDeck.getAction(dir), simulatedHistory, simRatingPool, tokenCounts,
+            );
+            undoStack.push({ kind: 'auto', undo: () => {
+                simulatedHistory.pop();
+                tokenCounts[dir]++;
+                simRatingPool = prevRating;
+                EventBus.emit(Events.COMBAT_V2_PLANNER_UNDO, { comboRating: prevRating, tokenCounts: { ...tokenCounts } });
+            }});
+            return true;
+        };
+
+        const addSpecialStep = (special: CombatAction): void => {
+            const prevRating = simRatingPool;
+            const ratingCost = special instanceof DancerCombatSpecialAction ? special.ratingRequirement : 0;
+            simRatingPool = this.addSimulatedStep(
+                actor, mods, passives, special, simulatedHistory,
+                Math.max(0, simRatingPool - ratingCost), tokenCounts,
+            );
+            undoStack.push({ kind: 'special', action: special, undo: () => {
+                simulatedHistory.pop();
+                simRatingPool = prevRating;
+                EventBus.emit(Events.COMBAT_V2_PLANNER_UNDO, { comboRating: prevRating, tokenCounts: { ...tokenCounts } });
+            }});
+        };
+
+        // ── Auto-combo helpers ────────────────────────────────────────────────
+
+        // Remove the auto-combo block (only call when top of stack is 'auto').
+        const drainAutoCombo = (): void => {
+            for (let i = 0; i < autoComboUndoCount; i++) undoStack.pop()!.undo();
+            autoComboUndoCount = 0;
+        };
+
+        // Append auto-combo to wherever the plan currently ends; no-op if already applied.
+        const applyAutoCombo = (): void => {
+            if (autoComboUndoCount > 0) return;
+            if (forcedFirstDir !== null && addDirStep(forcedFirstDir)) autoComboUndoCount++;
+            for (const dir of cachedBestSeq) {
+                if (addDirStep(dir)) autoComboUndoCount++;
+            }
+            EventBus.emit(Events.COMBAT_V2_PLANNER_STAGE, { stage: 'auto-combo' });
+        };
+
+        const handleDelete = (): void => {
+            if (undoStack.length === 0) return;
+            const last = undoStack[undoStack.length - 1];
+            if (last.kind === 'special') {
+                undoStack.pop()!.undo();
+            } else {
+                drainAutoCombo();
+                EventBus.emit(Events.COMBAT_V2_PLANNER_STAGE, { stage: 'planning' });
+            }
+        };
+
+        return new Promise<{ carryoverTokenCounts: Record<AttackDirection, number>; plannedActions: CombatAction[] }>(resolve => {
+            const finish = () => {
+                this.input.keyboard!.off('keydown', onKeyDown);
+                EventBus.off(Events.COMBAT_V2_SPECIAL_SELECTED,       onSpecialSelected);
+                EventBus.off(Events.COMBAT_V2_AUTO_COMBO_REQUEST,      applyAutoCombo);
+                EventBus.off(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST, finish);
+                EventBus.emit(Events.COMBAT_V2_PLANNER_END);
+                const plannedActions = simulatedHistory.slice(initialHistoryLength).map(s => s.action);
+                resolve({ carryoverTokenCounts: { ...tokenCounts }, plannedActions });
+            };
+
+            const onSpecialSelected = ({ index }: { index: number }) => {
+                const sp = actor.actionDeck.getAllSpecials()[index];
+                if (!sp) return;
+                addSpecialStep(sp);
+            };
+
             const onKeyDown = (event: KeyboardEvent) => {
-                // Always block these keys from reaching DOM-focused elements (e.g. Back button).
-                const consumed = ['Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-                                  'Delete', 'Escape', 'Backspace', 'w', 'a', 's', 'd',
-                                  'W', 'A', 'S', 'D', '1', '2', '3', '4'];
+                const consumed = ['Tab', 'Enter', 'ArrowLeft', 'ArrowRight', 'Delete', 'Escape', 'Backspace'];
                 if (consumed.includes(event.key)) event.preventDefault();
 
-                if (event.key === 'Enter') {
-                    this.input.keyboard!.off('keydown', onKeyDown);
-                    EventBus.emit(Events.COMBAT_V2_PLANNER_END);
-                    resolve();
-                    return;
-                }
-
-                if (event.key === 'ArrowLeft') {
-                    this.cycleTarget(-1);
-                    return;
-                }
-                if (event.key === 'ArrowRight') {
-                    this.cycleTarget(1);
-                    return;
-                }
-
+                if (event.key === 'Enter')      { finish(); return; }
+                if (event.key === 'Tab')         { applyAutoCombo(); return; }
+                if (event.key === 'ArrowLeft')   { this.cycleTarget(-1); return; }
+                if (event.key === 'ArrowRight')  { this.cycleTarget(1);  return; }
                 if (event.key === 'Delete' || event.key === 'Escape' || event.key === 'Backspace') {
-                    if (simulatedHistory.length > this.comboHistory.length + lockedCount) {
-                        simulatedHistory.pop();
-                        simRatingPool = ratingPoolHistory.pop() ?? simRatingPool;
-                        EventBus.emit(Events.COMBAT_V2_PLANNER_UNDO, { comboRating: simRatingPool });
-                    }
-                    return;
+                    handleDelete();
                 }
-
-                // 1-4: special action
-                const specialKey = parseInt(event.key) as 1 | 2 | 3 | 4;
-                if (specialKey >= 1 && specialKey <= 4) {
-                    const sp = actor.actionDeck.getSpecialByKey(specialKey);
-                    if (!sp) return;
-                    if (simulatedHistory.length - this.comboHistory.length >= maxSteps) return;
-                    if (sp instanceof DancerCombatSpecialAction && simRatingPool < sp.ratingRequirement) return;
-                    const ratingAfterConsume = Math.max(
-                        0, simRatingPool - (sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0),
-                    );
-                    ratingPoolHistory.push(simRatingPool);
-                    simRatingPool = this.addSimulatedStep(actor, mods, passives, sp, simulatedHistory, ratingAfterConsume);
-                    return;
-                }
-
-                // WASD: direction action
-                const dir = WASD_MAP[event.key.toUpperCase()];
-                if (dir === undefined) return;
-                if (simulatedHistory.length - this.comboHistory.length >= maxSteps) return;
-                ratingPoolHistory.push(simRatingPool);
-                simRatingPool = this.addSimulatedStep(
-                    actor, mods, passives, actor.actionDeck.getAction(dir), simulatedHistory, simRatingPool,
-                );
             };
 
             this.input.keyboard!.on('keydown', onKeyDown);
+            EventBus.on(Events.COMBAT_V2_SPECIAL_SELECTED,       onSpecialSelected);
+            EventBus.on(Events.COMBAT_V2_AUTO_COMBO_REQUEST,      applyAutoCombo);
+            EventBus.on(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST, finish);
         });
+    }
+
+    private generateTokens(): AttackDirection[] {
+        const dirs = [AttackDirection.UP, AttackDirection.DOWN, AttackDirection.LEFT, AttackDirection.RIGHT];
+        const tokens: AttackDirection[] = [];
+        for (let i = 0; i < TOKENS_PER_TURN; i++) {
+            tokens.push(dirs[Math.floor(Math.random() * dirs.length)]);
+        }
+        return tokens;
     }
 
     // Returns the new comboRating after the step (so callers can track the pool).
@@ -453,6 +551,7 @@ export class CombatSceneV2 extends Scene {
         action:           CombatAction,
         simulatedHistory: ComboStep[],
         startingRating:   number,
+        tokenCounts?:     Record<AttackDirection, number>,
     ): number {
         const prev = simulatedHistory[simulatedHistory.length - 1] ?? null;
         const step: ComboStep = {
@@ -478,9 +577,11 @@ export class CombatSceneV2 extends Scene {
         const input = action.input;
         const displayKey = input?.inputDirection != null
             ? DIR_DISPLAY[input.inputDirection]
-            : input?.inputSpecialKey != null
-                ? String(input.inputSpecialKey)
-                : '?';
+            : input?.inputSequence != null
+                ? input.inputSequence.map(d => DIR_DISPLAY[d]).join('')
+                : input?.inputSpecialKey != null
+                    ? String(input.inputSpecialKey)
+                    : '?';
 
         EventBus.emit(Events.COMBAT_V2_PLANNER_ACTION, {
             action,
@@ -489,56 +590,11 @@ export class CombatSceneV2 extends Scene {
             comboRating:     step.comboStack.comboRating,
             atkMultiplier:   step.comboStack.finalMultiplier,
             waitMs:          (input?.waitTillNextInputDuration ?? 0) / CombatConfig.inputPhaseSpeed,
+            tokenCounts:     tokenCounts ? { ...tokenCounts } : undefined,
+            sequenceSteps:   input?.inputSequenceSteps?.map(s => ({ dir: s.key, waitMs: s.waitMs / CombatConfig.inputPhaseSpeed })),
         });
 
         return step.comboStack.comboRating;
-    }
-
-    private waitForNextTimedInput(
-        durationMs:     number,
-        lookupSpecial?: (key: 1 | 2 | 3 | 4) => CombatAction | null,
-    ): Promise<TimedInputResult | null> {
-        const { inputEarlyWindow, inputLateWindow } = CombatConfig;
-        const maxWait   = durationMs + inputLateWindow;
-        const startTime = this.time.now;
-
-        EventBus.emit(Events.COMBAT_V2_RHYTHM_START, {
-            durationMs,
-            earlyWindowMs: inputEarlyWindow,
-            lateWindowMs:  inputLateWindow,
-        });
-
-        return new Promise(resolve => {
-            let settled = false;
-
-            const settle = (value: TimedInputResult | null) => {
-                if (settled) return;
-                settled = true;
-                this.input.keyboard!.off('keydown', onKeyDown);
-                EventBus.emit(Events.COMBAT_V2_RHYTHM_END);
-                resolve(value);
-            };
-
-            const onKeyDown = (event: KeyboardEvent) => {
-                const numKey = parseInt(event.key);
-                if (numKey >= 1 && numKey <= 4) {
-                    event.preventDefault();
-                    const sp = lookupSpecial?.(numKey as 1 | 2 | 3 | 4) ?? null;
-                    if (sp) settle({ kind: 'special', action: sp });
-                    return;
-                }
-                const dir = WASD_MAP[event.key.toUpperCase()];
-                if (dir === undefined) return;
-                event.preventDefault();
-                const elapsed = this.time.now - startTime;
-                const timed   = elapsed >= durationMs - inputEarlyWindow &&
-                                elapsed <= durationMs + inputLateWindow;
-                settle({ kind: 'dir', direction: dir, timed });
-            };
-
-            this.input.keyboard!.on('keydown', onKeyDown);
-            this.time.delayedCall(maxWait, () => settle(null));
-        });
     }
 
     // ── Enemy turn ────────────────────────────────────────────────────────────

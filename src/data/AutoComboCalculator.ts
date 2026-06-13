@@ -84,7 +84,96 @@ function simulateDamage(
     return total;
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Full-turn simulator (includes onComboEnd effects) ─────────────────────────
+
+function simulateFullTurnDamage(
+    directions: AttackDirection[],
+    actionDeck: ActionDeck,
+    mods:       readonly ComboMod[],
+    worldMods:  readonly WorldMod[],
+    rules:      readonly ComboRule[],
+    passives:   readonly SupportPassive[],
+): number {
+    const history: ComboStep[] = [];
+
+    for (const dir of directions) {
+        const action = actionDeck.getAction(dir);
+        const prev   = history[history.length - 1] ?? null;
+
+        const step: ComboStep = {
+            action,
+            comboStack:                new ComboStackSystem(prev?.comboStack.comboRating ?? 0),
+            availableWorldMods:        worldMods,
+            availableComboMods:        mods,
+            availableComboRules:       rules,
+            availableCreaturePassives: passives,
+            applicableWorldMods:        [],
+            applicableComboMods:        [],
+            applicableComboRules:       [],
+            applicableCreaturePassives: [],
+            activeEffects:             prev ? new Map(prev.activeEffects) : new Map(),
+            newEffects:                [],
+            lostEffects:               [],
+            finalDamage:               0,
+        };
+
+        calculateStepDamage(step, history);
+        history.push(step);
+    }
+
+    // Apply end-of-turn hooks (may patch finalDamage, e.g. HitAndRun).
+    for (const mod     of mods)     mod.onComboEnd(history);
+    for (const wm      of worldMods) wm.onComboEnd(history);
+    for (const passive of passives)  passive.onComboEnd(history);
+
+    return history.reduce((sum, s) => sum + s.finalDamage, 0);
+}
+
+// ── Token-pool search ─────────────────────────────────────────────────────────
+// Finds the permutation of the provided token multiset that maximises total
+// damage.  With a pool of ≤ 8 tokens the worst-case search space is 8! = 40 320
+// leaf evaluations — well within real-time budget.
+
+export function findBestComboFromTokens(
+    tokenCounts: Record<AttackDirection, number>,
+    actionDeck:  ActionDeck,
+    mods:        readonly ComboMod[],
+    worldMods:   readonly WorldMod[]       = [],
+    rules:       readonly ComboRule[]      = [],
+    passives:    readonly SupportPassive[] = [],
+): AttackDirection[] {
+    const pool  = { ...tokenCounts };
+    const total = (Object.values(pool) as number[]).reduce((a, b) => a + b, 0);
+    if (total === 0) return [];
+
+    let bestDamage = -1;
+    let bestSeq:    AttackDirection[] = [];
+    const current:  AttackDirection[] = [];
+
+    function search(): void {
+        if (current.length === total) {
+            const dmg = simulateFullTurnDamage(current, actionDeck, mods, worldMods, rules, passives);
+            if (dmg > bestDamage) {
+                bestDamage = dmg;
+                bestSeq    = [...current];
+            }
+            return;
+        }
+        for (const dir of ALL_DIRECTIONS) {
+            if (pool[dir] <= 0) continue;
+            pool[dir]--;
+            current.push(dir);
+            search();
+            current.pop();
+            pool[dir]++;
+        }
+    }
+
+    search();
+    return bestSeq;
+}
+
+// ── Public entry point (energy-based, kept for backward compat) ───────────────
 
 export function findBestCombo(
     energy:     number,
