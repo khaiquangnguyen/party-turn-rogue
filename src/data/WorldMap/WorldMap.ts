@@ -4,7 +4,7 @@ import { ExtraDamageOnAir } from '../WorldMods/ExtraDamageOnAir.ts';
 import { ExtraDamageWhenCrashIntoGround } from '../WorldMods/ExtraDamageWhenCrashIntoGround.ts';
 import { Neutral          } from '../WorldMods/Neutral.ts';
 
-const EXPEDITION_COUNT   = { min: 5, max: 6 } as const;
+const EXPEDITION_COUNT   = { min: 3, max: 3 } as const;
 const WORLD_MODS_PER_EXP = { min: 2, max: 3 } as const;
 const MAP_LENGTH         = 5;
 

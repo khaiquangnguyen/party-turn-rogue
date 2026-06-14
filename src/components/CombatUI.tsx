@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { EventBus } from '../game/EventBus';
 import { Events } from '../game/Events';
 import { GameData } from '../game/GameData';
-import { AttackDirection, DancerCombatSpecialAction } from '../game/entities/CombatTypes';
+import { AttackDirection, DancerCombatSpecialAction, TokenSpentRequirement } from '../game/entities/CombatTypes';
 import { DEFAULT_COMBO_RULES } from '../data/ComboRule/DefaultComboRules';
 import { CombatConfig } from '../game/combatConfig';
 import { CombatFeatureFlags } from '../game/combatFeatureFlags';
@@ -35,10 +35,12 @@ interface ActionCardInfo {
 }
 
 interface SpecialCardInfo {
-    name:              string | null;
-    inputSeq:          AttackDirection[] | null;
-    ratingRequirement: number;
-    damage:            number;
+    name:                   string | null;
+    inputSeq:               AttackDirection[] | null;
+    stageSeqs?:             AttackDirection[][];
+    ratingRequirement:      number;
+    damage:                 number;
+    tokenSpentRequirement?: TokenSpentRequirement;
 }
 
 interface ComboEntry {
@@ -49,15 +51,21 @@ interface ComboEntry {
     isCounter: boolean;
 }
 
+interface StageSequenceInfo {
+    animation:  string;
+    steps:      { dir: AttackDirection; waitMs: number; holdMs?: number }[];
+}
+
 interface PlannerEntry {
-    direction:     AttackDirection | null;
-    displayKey:    string;
-    name:          string;
-    damage:        number;
-    atkMultiplier: number;
-    comboRating:   number;
-    waitMs:        number;
+    direction:      AttackDirection | null;
+    displayKey:     string;
+    name:           string;
+    damage:         number;
+    atkMultiplier:  number;
+    comboRating:    number;
+    waitMs:         number;
     sequenceSteps?: { dir: AttackDirection; waitMs: number }[];
+    stageSequences?: StageSequenceInfo[];
 }
 
 interface ComboModInfo {
@@ -98,9 +106,16 @@ interface RhythmState {
     nextPlannedDir?: AttackDirection;
 }
 
+interface NodeMeta {
+    holdMs?:       number;
+    chordDirs?:    AttackDirection[];
+    seqStepHolds?: (number | undefined)[];
+}
+
 interface InputPhaseState {
     hitTimesMs: number[];
     startedAt:  number;
+    nodeMeta:   NodeMeta[];
 }
 
 interface ParryState {
@@ -165,6 +180,12 @@ export default function CombatUI() {
         [AttackDirection.LEFT]:  0,
         [AttackDirection.RIGHT]: 0,
     });
+    const [initialDirTokens, setInitialDirTokens] = useState<Record<AttackDirection, number>>({
+        [AttackDirection.UP]:    0,
+        [AttackDirection.DOWN]:  0,
+        [AttackDirection.LEFT]:  0,
+        [AttackDirection.RIGHT]: 0,
+    });
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -209,10 +230,14 @@ export default function CombatUI() {
                     name:      deck.getAction(dir).name,
                 })));
                 const specs: SpecialCardInfo[] = deck.getAllSpecials().map(sp => ({
-                    name:              sp.name,
-                    inputSeq:          sp.input?.inputSequence ?? null,
-                    ratingRequirement: sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0,
-                    damage:            sp.damage,
+                    name:                   sp.name,
+                    inputSeq:               sp.input?.inputSequence ?? null,
+                    stageSeqs:              sp instanceof DancerCombatSpecialAction && sp.stages
+                        ? sp.stages.map(s => s.input.inputSequence ?? [])
+                        : undefined,
+                    ratingRequirement:      sp instanceof DancerCombatSpecialAction ? sp.ratingRequirement : 0,
+                    damage:                 sp.damage,
+                    tokenSpentRequirement:  sp instanceof DancerCombatSpecialAction ? sp.tokenSpentRequirement ?? undefined : undefined,
                 }));
                 setSpecials(specs);
             }
@@ -351,12 +376,13 @@ export default function CombatUI() {
         const onPlayerHit    = () => showFeedback('HIT',            '#ef4444');
         const onCounterAtk   = () => showFeedback('COUNTER ATTACK', '#a855f7');
 
-        const onPlannerStart = (data: { maxSteps: number; tokenCounts: Record<AttackDirection, number> }) => {
+        const onPlannerStart = (data: { maxSteps: number; tokenCounts: Record<AttackDirection, number>; initialTokenCounts: Record<AttackDirection, number> }) => {
             setIsPlannerMode(true);
             setPlannerLog([]);
             setPlannerMax(data.maxSteps);
             plannedSeqRef.current = [];
             setDirTokens({ ...data.tokenCounts });
+            setInitialDirTokens({ ...(data.initialTokenCounts ?? data.tokenCounts) });
             setPlannerStage(null);
             setPhaseAnnounce({ text: 'Planning Phase', color: '#0ea5e9' });
             setTimeout(() => setPhaseAnnounce(null), 1200);
@@ -365,25 +391,27 @@ export default function CombatUI() {
             setPlannerStage(data.stage);
         };
         const onPlannerAction = (data: {
-            action:          { name: string; input?: { inputDirection: AttackDirection | null; inputSpecialKey?: number | null } };
-            displayKey:      string;
-            simulatedDamage: number;
-            comboRating:     number;
-            atkMultiplier:   number;
-            waitMs:          number;
-            tokenCounts?:    Record<AttackDirection, number>;
-            sequenceSteps?:  { dir: AttackDirection; waitMs: number }[];
+            action:           { name: string; input?: { inputDirection: AttackDirection | null; inputSpecialKey?: number | null } };
+            displayKey:       string;
+            simulatedDamage:  number;
+            comboRating:      number;
+            atkMultiplier:    number;
+            waitMs:           number;
+            tokenCounts?:     Record<AttackDirection, number>;
+            sequenceSteps?:   { dir: AttackDirection; waitMs: number }[];
+            stageSequences?:  StageSequenceInfo[];
         }) => {
             const dir = data.action.input?.inputDirection ?? null;
             const entry: PlannerEntry = {
-                direction:     dir,
-                displayKey:    data.displayKey,
-                name:          data.action.name,
-                damage:        data.simulatedDamage,
-                atkMultiplier: data.atkMultiplier,
-                comboRating:   data.comboRating,
-                waitMs:        data.waitMs,
-                sequenceSteps: data.sequenceSteps,
+                direction:      dir,
+                displayKey:     data.displayKey,
+                name:           data.action.name,
+                damage:         data.simulatedDamage,
+                atkMultiplier:  data.atkMultiplier,
+                comboRating:    data.comboRating,
+                waitMs:         data.waitMs,
+                sequenceSteps:  data.sequenceSteps,
+                stageSequences: data.stageSequences,
             };
             setPlannerLog(prev => [...prev, entry]);
             plannedSeqRef.current = [...plannedSeqRef.current, entry];
@@ -414,8 +442,8 @@ export default function CombatUI() {
             setPhaseAnnounce({ text: 'Execute!', color: '#f59e0b' });
             setTimeout(() => setPhaseAnnounce(null), 900);
         };
-        const onInputPhaseStart = (data: { hitTimesMs: number[] }) => {
-            setInputPhase({ hitTimesMs: data.hitTimesMs, startedAt: performance.now() });
+        const onInputPhaseStart = (data: { hitTimesMs: number[]; nodeMeta?: NodeMeta[] }) => {
+            setInputPhase({ hitTimesMs: data.hitTimesMs, nodeMeta: data.nodeMeta ?? [], startedAt: performance.now() });
         };
 
         EventBus.on(Events.CURRENT_SCENE_READY,            onSceneReady);
@@ -533,6 +561,7 @@ export default function CombatUI() {
                     comboRating={comboRating}
                     companions={companions}
                     dirTokens={dirTokens}
+                    initialDirTokens={initialDirTokens}
                     isPlannerMode={isPlannerMode}
                     onSpecialSelect={i => EventBus.emit(Events.COMBAT_V2_SPECIAL_SELECTED, { index: i })}
                 />
@@ -558,6 +587,7 @@ export default function CombatUI() {
                         key={inputPhase.startedAt}
                         sequence={plannedSeqRef.current}
                         hitTimesMs={inputPhase.hitTimesMs}
+                        nodeMeta={inputPhase.nodeMeta}
                         earlyWindowMs={CombatConfig.inputEarlyWindow}
                         lateWindowMs={CombatConfig.inputLateWindow}
                         executionIdx={executionIdx}
@@ -773,23 +803,52 @@ export default function CombatUI() {
 
 // ── Top info bar ──────────────────────────────────────────────────────────────
 
+function meetsTokenSpentReq(
+    req:   TokenSpentRequirement | null | undefined,
+    spent: Record<AttackDirection, number>,
+): boolean {
+    if (!req) return true;
+    if (req.mode === 'any') {
+        return Object.values(spent).reduce((a, b) => a + b, 0) >= req.total;
+    }
+    for (const [dirStr, required] of Object.entries(req.perDir)) {
+        if ((spent[Number(dirStr) as AttackDirection] ?? 0) < (required ?? 0)) return false;
+    }
+    return true;
+}
+
+function formatTokenReq(req: TokenSpentRequirement): string {
+    if (req.mode === 'any') return `⊕${req.total}`;
+    return Object.entries(req.perDir)
+        .map(([d, n]) => `${PARRY_DIR_ARROW[Number(d) as AttackDirection]}${n}`)
+        .join('');
+}
+
 function TopBar({
-    player, actions, specials, worldMods, comboMods, comboRules, comboRating, companions, dirTokens,
-    isPlannerMode, onSpecialSelect,
+    player, actions, specials, worldMods, comboMods, comboRules, comboRating, companions,
+    dirTokens, initialDirTokens, isPlannerMode, onSpecialSelect,
 }: {
-    player:           PlayerSnapshot;
-    actions:          ActionCardInfo[];
-    specials:         SpecialCardInfo[];
-    worldMods:        WorldModInfo[];
-    comboMods:        ComboModInfo[];
-    comboRules:       ComboRuleInfo[];
-    comboRating:      number;
-    companions:       CompanionInfo[];
-    dirTokens:        Record<AttackDirection, number>;
-    isPlannerMode:    boolean;
-    onSpecialSelect?: (index: number) => void;
+    player:            PlayerSnapshot;
+    actions:           ActionCardInfo[];
+    specials:          SpecialCardInfo[];
+    worldMods:         WorldModInfo[];
+    comboMods:         ComboModInfo[];
+    comboRules:        ComboRuleInfo[];
+    comboRating:       number;
+    companions:        CompanionInfo[];
+    dirTokens:         Record<AttackDirection, number>;
+    initialDirTokens:  Record<AttackDirection, number>;
+    isPlannerMode:     boolean;
+    onSpecialSelect?:  (index: number) => void;
 }) {
     const hpPct = Math.max(0, (player.hp / player.maxHp) * 100);
+
+    const spentTokens: Record<AttackDirection, number> = {
+        [AttackDirection.UP]:    Math.max(0, initialDirTokens[AttackDirection.UP]    - dirTokens[AttackDirection.UP]),
+        [AttackDirection.DOWN]:  Math.max(0, initialDirTokens[AttackDirection.DOWN]  - dirTokens[AttackDirection.DOWN]),
+        [AttackDirection.LEFT]:  Math.max(0, initialDirTokens[AttackDirection.LEFT]  - dirTokens[AttackDirection.LEFT]),
+        [AttackDirection.RIGHT]: Math.max(0, initialDirTokens[AttackDirection.RIGHT] - dirTokens[AttackDirection.RIGHT]),
+    };
 
     return (
         <div className="w-full bg-white/95 border-b border-gray-200 shadow-sm flex items-start gap-4 px-4 py-3 flex-wrap">
@@ -844,28 +903,55 @@ function TopBar({
                         <div className="flex gap-1.5 flex-wrap">
                             {specials.map((s, i) => {
                                 if (!s.name) return null;
-                                const affordable = comboRating >= s.ratingRequirement;
-                                const clickable  = isPlannerMode && affordable;
-                                const seqLabel   = s.inputSeq
-                                    ? s.inputSeq.map(d => PARRY_DIR_ARROW[d]).join('')
-                                    : '?';
+                                const ratingMet    = comboRating >= s.ratingRequirement;
+                                const tokenMet     = meetsTokenSpentReq(s.tokenSpentRequirement, spentTokens);
+                                const affordable   = ratingMet && tokenMet;
+                                const clickable    = isPlannerMode && affordable;
+                                const isMultiStage = s.stageSeqs && s.stageSeqs.length > 1;
+                                const seqLabel     = isMultiStage
+                                    ? s.stageSeqs!.map(seq => seq.map(d => PARRY_DIR_ARROW[d]).join('')).join(' → ')
+                                    : s.inputSeq
+                                        ? s.inputSeq.map(d => PARRY_DIR_ARROW[d]).join('')
+                                        : '?';
                                 return (
                                     <div
                                         key={i}
                                         onClick={() => clickable && onSpecialSelect?.(i)}
-                                        className={`rounded-lg px-2 py-1.5 text-left w-28 border transition-colors ${
+                                        className={`rounded-lg px-2 py-1.5 text-left border transition-colors ${
+                                            isMultiStage ? 'w-auto min-w-[7rem]' : 'w-28'
+                                        } ${
                                             affordable
                                                 ? 'bg-purple-50 border-purple-500 shadow-[0_0_6px_rgba(168,85,247,0.4)]'
                                                 : 'bg-gray-50 border-gray-200 opacity-60'
                                         } ${clickable ? 'pointer-events-auto cursor-pointer hover:bg-purple-100 active:bg-purple-200' : 'pointer-events-none'}`}
                                     >
-                                        <div className="flex items-center justify-between mb-0.5">
-                                            <span className={`text-xs font-mono font-bold tracking-widest ${affordable ? 'text-purple-600' : 'text-gray-400'}`}>
-                                                {seqLabel}
-                                            </span>
-                                            <span className={`text-xs font-bold ${affordable ? 'text-amber-500' : 'text-gray-400'}`}>
-                                                ★{s.ratingRequirement}
-                                            </span>
+                                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                                            {isMultiStage ? (
+                                                <div className="flex items-center gap-1 flex-wrap">
+                                                    {s.stageSeqs!.map((seq, si) => (
+                                                        <span key={si} className="flex items-center gap-0.5">
+                                                            {si > 0 && <span className={`text-xs ${affordable ? 'text-purple-400' : 'text-gray-300'}`}>›</span>}
+                                                            <span className={`text-xs font-mono font-bold tracking-widest ${affordable ? 'text-purple-600' : 'text-gray-400'}`}>
+                                                                {seq.map(d => PARRY_DIR_ARROW[d]).join('')}
+                                                            </span>
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <span className={`text-xs font-mono font-bold tracking-widest ${affordable ? 'text-purple-600' : 'text-gray-400'}`}>
+                                                    {seqLabel}
+                                                </span>
+                                            )}
+                                            <div className="flex items-center gap-1 flex-shrink-0">
+                                                {s.tokenSpentRequirement && (
+                                                    <span className={`text-xs font-bold ${tokenMet ? 'text-sky-500' : 'text-gray-400'}`}>
+                                                        {formatTokenReq(s.tokenSpentRequirement)}
+                                                    </span>
+                                                )}
+                                                <span className={`text-xs font-bold ${ratingMet ? 'text-amber-500' : 'text-gray-400'}`}>
+                                                    ★{s.ratingRequirement}
+                                                </span>
+                                            </div>
                                         </div>
                                         <div className="flex items-center justify-between">
                                             <span className="block text-xs text-gray-700 leading-tight">{s.name}</span>
@@ -1460,7 +1546,7 @@ const BASE_PX_PER_MS = 0.22;
 const HIT_X          = 110;
 const NODE_R     = 26;
 const TRACK_W    = 740;
-const TRACK_H    = 80;
+const TRACK_H    = 100;
 
 function BurstNode({ label }: { label: string }) {
     const [scale,   setScale]   = useState(1);
@@ -1506,6 +1592,7 @@ function BurstNode({ label }: { label: string }) {
 function InputPhaseStrip({
     sequence,
     hitTimesMs,
+    nodeMeta,
     earlyWindowMs,
     lateWindowMs,
     executionIdx,
@@ -1514,6 +1601,7 @@ function InputPhaseStrip({
 }: {
     sequence:        PlannerEntry[];
     hitTimesMs:      number[];
+    nodeMeta:        NodeMeta[];
     earlyWindowMs:   number;
     lateWindowMs:    number;
     executionIdx:    number;
@@ -1537,30 +1625,64 @@ function InputPhaseStrip({
         return () => cancelAnimationFrame(rafRef.current);
     }, [startedAt]);
 
-    // Build flat node list — specials expand into one node per sequence key.
-    interface FlatNode { label: string; entryIdx: number; isSeqKey: boolean }
+    // Build flat node list — sequences/stages expand into one node per key.
+    interface FlatNode {
+        label:      string;
+        entryIdx:   number;
+        isSeqKey:   boolean;
+        stageIdx?:  number;
+        holdMs?:    number;
+        chordDirs?: AttackDirection[];
+    }
     const flatNodes: FlatNode[] = [];
     const hitTimes: number[] = [];
 
     for (let eIdx = 0; eIdx < sequence.length; eIdx++) {
         const entry = sequence[eIdx];
-        const steps = entry.sequenceSteps;
         const entryHitTime = hitTimesMs[eIdx] ?? 0;
+        const meta = nodeMeta[eIdx] ?? {};
 
-        if (steps && steps.length > 0) {
+        if (entry.stageSequences && entry.stageSequences.length > 0) {
+            // Multi-stage special: expand each stage's keys in sequence.
+            let nextStageStartTime = entryHitTime;
+            for (let stageIdx = 0; stageIdx < entry.stageSequences.length; stageIdx++) {
+                const stage = entry.stageSequences[stageIdx];
+                for (let sIdx = 0; sIdx < stage.steps.length; sIdx++) {
+                    flatNodes.push({ label: PARRY_DIR_ARROW[stage.steps[sIdx].dir], entryIdx: eIdx, isSeqKey: true, stageIdx, holdMs: stage.steps[sIdx].holdMs });
+                    if (sIdx === 0) {
+                        hitTimes.push(nextStageStartTime + stage.steps[0].waitMs);
+                    } else {
+                        hitTimes.push(hitTimes[hitTimes.length - 1] + stage.steps[sIdx].waitMs);
+                    }
+                }
+                // Next stage starts after the last key's press time + its hold duration
+                if (stageIdx < entry.stageSequences.length - 1 && stage.steps.length > 0) {
+                    const lastStep = stage.steps[stage.steps.length - 1];
+                    nextStageStartTime = hitTimes[hitTimes.length - 1] + (lastStep.holdMs ?? 0);
+                }
+            }
+        } else if (entry.sequenceSteps && entry.sequenceSteps.length > 0) {
+            const steps = entry.sequenceSteps;
             for (let sIdx = 0; sIdx < steps.length; sIdx++) {
-                flatNodes.push({ label: PARRY_DIR_ARROW[steps[sIdx].dir], entryIdx: eIdx, isSeqKey: true });
+                flatNodes.push({
+                    label:    PARRY_DIR_ARROW[steps[sIdx].dir],
+                    entryIdx: eIdx,
+                    isSeqKey: true,
+                    holdMs:   meta.seqStepHolds?.[sIdx],
+                });
                 if (sIdx === 0) {
-                    hitTimes.push(entryHitTime);
+                    hitTimes.push(entryHitTime + steps[0].waitMs);
                 } else {
-                    hitTimes.push(hitTimes[hitTimes.length - 1] + steps[sIdx - 1].waitMs);
+                    hitTimes.push(hitTimes[hitTimes.length - 1] + steps[sIdx].waitMs);
                 }
             }
         } else {
             flatNodes.push({
-                label:    entry.direction !== null ? PARRY_DIR_ARROW[entry.direction] : entry.displayKey,
-                entryIdx: eIdx,
-                isSeqKey: false,
+                label:     entry.direction !== null ? PARRY_DIR_ARROW[entry.direction] : entry.displayKey,
+                entryIdx:  eIdx,
+                isSeqKey:  false,
+                holdMs:    meta.holdMs,
+                chordDirs: meta.chordDirs,
             });
             hitTimes.push(entryHitTime);
         }
@@ -1633,6 +1755,107 @@ function InputPhaseStrip({
 
                         if (x > TRACK_W + NODE_R * 2) return null;
 
+                        // Per-stage colour palette for multi-stage specials
+                        const STAGE_BORDER = ['#a855f7', '#0ea5e9', '#22c55e', '#f59e0b'];
+                        const STAGE_BG     = ['#faf5ff', '#f0f9ff', '#f0fdf4', '#fffbeb'];
+                        const STAGE_TEXT   = ['#7e22ce', '#0369a1', '#15803d', '#92400e'];
+
+                        const stagePalette = node.stageIdx !== undefined;
+                        const si           = (node.stageIdx ?? 0) % STAGE_BORDER.length;
+
+                        const borderColor = isCurr ? '#f59e0b'
+                            : node.isSeqKey ? (stagePalette ? STAGE_BORDER[si] : '#a855f7')
+                            : '#6b7280';
+                        const bgColor     = isCurr ? '#fef3c7'
+                            : node.isSeqKey ? (stagePalette ? STAGE_BG[si] : '#faf5ff')
+                            : '#f3f4f6';
+                        const textColor   = isCurr ? '#92400e'
+                            : node.isSeqKey ? (stagePalette ? STAGE_TEXT[si] : '#7e22ce')
+                            : '#374151';
+
+                        const isHold  = node.holdMs !== undefined;
+                        const isChord = node.chordDirs !== undefined && node.chordDirs.length > 0;
+
+                        // ── Hold: horizontal pill strip whose width = hold duration ──
+                        if (isHold) {
+                            const stripH = 36;
+                            const stripW = Math.max(NODE_R * 2, node.holdMs! * pxPerMs);
+                            const stripColor   = isCurr ? '#f59e0b' : '#ea580c';
+                            const stripBg      = isCurr ? '#fef3c7' : '#fff7ed';
+                            const stripText    = isCurr ? '#92400e' : '#c2410c';
+                            return (
+                                <div key={i} style={{
+                                    position:        'absolute',
+                                    left:            x,
+                                    top:             TRACK_H / 2 - stripH / 2,
+                                    width:           stripW,
+                                    height:          stripH,
+                                    borderRadius:    stripH / 2,
+                                    border:          `3px solid ${stripColor}`,
+                                    backgroundColor: stripBg,
+                                    display:         'flex',
+                                    alignItems:      'center',
+                                    gap:             4,
+                                    paddingLeft:     8,
+                                    boxShadow:       isCurr && isNear ? '0 0 12px 4px rgba(245,158,11,0.5)' : 'none',
+                                    zIndex:          2,
+                                    opacity:         x + stripW < 0 ? 0 : 1,
+                                    overflow:        'hidden',
+                                }}>
+                                    <span style={{ fontSize: '1.1rem', fontWeight: 900, color: stripText, lineHeight: 1, userSelect: 'none', flexShrink: 0 }}>
+                                        {node.label}
+                                    </span>
+                                    <span style={{ fontSize: '9px', fontWeight: 700, color: stripText, userSelect: 'none', opacity: 0.8 }}>
+                                        {(node.holdMs! / 1000).toFixed(1)}s
+                                    </span>
+                                </div>
+                            );
+                        }
+
+                        // ── Chord: two vertically stacked circles, one per direction ──
+                        if (isChord && node.chordDirs) {
+                            const cR         = 18;
+                            const gap        = 3;
+                            const totalH     = node.chordDirs.length * cR * 2 + (node.chordDirs.length - 1) * gap;
+                            const topY       = TRACK_H / 2 - totalH / 2;
+                            const chordBorder = isCurr ? '#f59e0b' : '#0891b2';
+                            const chordBg     = isCurr ? '#ecfeff' : '#f0f9ff';
+                            const chordText   = isCurr ? '#155e75' : '#0369a1';
+                            return (
+                                <div key={i} style={{
+                                    position: 'absolute',
+                                    left:     x - cR,
+                                    top:      topY,
+                                    width:    cR * 2,
+                                    height:   totalH,
+                                    zIndex:   2,
+                                    opacity:  x < -cR * 2 ? 0 : 1,
+                                }}>
+                                    {node.chordDirs.map((dir, di) => (
+                                        <div key={di} style={{
+                                            position:        'absolute',
+                                            left:            0,
+                                            top:             di * (cR * 2 + gap),
+                                            width:           cR * 2,
+                                            height:          cR * 2,
+                                            borderRadius:    '50%',
+                                            border:          `3px solid ${chordBorder}`,
+                                            backgroundColor: chordBg,
+                                            display:         'flex',
+                                            alignItems:      'center',
+                                            justifyContent:  'center',
+                                            boxShadow:       isCurr && isNear ? '0 0 8px 3px rgba(245,158,11,0.5)' : 'none',
+                                        }}>
+                                            <span style={{ fontSize: '0.95rem', fontWeight: 900, color: chordText, lineHeight: 1, userSelect: 'none' }}>
+                                                {PARRY_DIR_ARROW[dir]}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        }
+
+                        // ── Regular tap node ──────────────────────────────────────────
                         return (
                             <div
                                 key={i}
@@ -1643,8 +1866,8 @@ function InputPhaseStrip({
                                     width:           NODE_R * 2,
                                     height:          NODE_R * 2,
                                     borderRadius:    '50%',
-                                    border:          `3px solid ${isCurr ? '#f59e0b' : node.isSeqKey ? '#a855f7' : '#6b7280'}`,
-                                    backgroundColor: isCurr ? '#fef3c7' : node.isSeqKey ? '#faf5ff' : '#f3f4f6',
+                                    border:          `3px solid ${borderColor}`,
+                                    backgroundColor: bgColor,
                                     display:         'flex',
                                     alignItems:      'center',
                                     justifyContent:  'center',
@@ -1656,7 +1879,7 @@ function InputPhaseStrip({
                                 <span style={{
                                     fontSize:   '1.1rem',
                                     fontWeight: 900,
-                                    color:      isCurr ? '#92400e' : node.isSeqKey ? '#7e22ce' : '#374151',
+                                    color:      textColor,
                                     lineHeight: 1,
                                     userSelect: 'none',
                                 }}>
@@ -1752,48 +1975,6 @@ function PlannerStrip({
                     )}
                 </div>
             </div>
-        </div>
-    );
-}
-
-// ── Combo log strip ───────────────────────────────────────────────────────────
-
-function ComboLogStrip({ log }: { log: ComboEntry[] }) {
-    const total = log.reduce((sum, e) => sum + e.damage, 0);
-
-    return (
-        <div className="bg-amber-50/95 border-b border-amber-200 flex items-center gap-2 px-4 py-2 overflow-x-auto">
-            <span className="text-xs font-bold uppercase tracking-widest text-amber-600 flex-shrink-0 mr-1">
-                Combo
-            </span>
-
-            {log.map((entry, i) => (
-                <div
-                    key={i}
-                    className={`flex-shrink-0 flex items-center gap-1.5 rounded-lg px-2.5 py-1 border text-xs ${
-                        entry.isCounter
-                            ? 'bg-purple-50 border-purple-300 text-purple-800'
-                            : 'bg-white border-amber-200 text-gray-800'
-                    }`}
-                >
-                    {!entry.isCounter && (
-                        <span className="font-bold text-amber-600">[{entry.dirKey ?? '—'}]</span>
-                    )}
-                    <span className="font-medium">{entry.name}</span>
-                    <span className="font-bold text-red-500">−{entry.damage}</span>
-                    {entry.chainMult > 1 && (
-                        <span className="text-green-600 font-bold">
-                            ×{entry.chainMult.toFixed(2)}
-                        </span>
-                    )}
-                </div>
-            ))}
-
-            {log.length > 1 && (
-                <div className="ml-auto flex-shrink-0 bg-red-50 border border-red-200 rounded-lg px-3 py-1 text-xs font-bold text-red-600">
-                    Total −{total}
-                </div>
-            )}
         </div>
     );
 }

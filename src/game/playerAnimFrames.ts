@@ -25,6 +25,12 @@ const _throwOverarm     = import.meta.glob<string>('../resources/player_prototyp
 const _throwUnderarm    = import.meta.glob<string>('../resources/player_prototype/Combat/ThrowUnderarm/*.png',  { eager: true, query: '?url', import: 'default' });
 const _hit              = import.meta.glob<string>('../resources/player_prototype/Combat/Hit/*.png',            { eager: true, query: '?url', import: 'default' });
 const _guard            = import.meta.glob<string>('../resources/player_prototype/Combat/Guard/*.png',          { eager: true, query: '?url', import: 'default' });
+const _bowAim           = import.meta.glob<string>('../resources/player_prototype/Combat/BowAim/*.png',         { eager: true, query: '?url', import: 'default' });
+const _bowDraw          = import.meta.glob<string>('../resources/player_prototype/Combat/BowDraw/*.png',        { eager: true, query: '?url', import: 'default' });
+const _bowFire          = import.meta.glob<string>('../resources/player_prototype/Combat/BowFire/*.png',        { eager: true, query: '?url', import: 'default' });
+const _gunFire          = import.meta.glob<string>('../resources/player_prototype/Combat/GunFire/*.png',        { eager: true, query: '?url', import: 'default' });
+const _gunReload        = import.meta.glob<string>('../resources/player_prototype/Combat/GunReload/*.png',      { eager: true, query: '?url', import: 'default' });
+const _gunRunFire       = import.meta.glob<string>('../resources/player_prototype/Combat/GunRunFire/*.png',     { eager: true, query: '?url', import: 'default' });
 
 function sortedUrls(glob: Record<string, string>): string[] {
     return Object.keys(glob).sort().map(k => glob[k]);
@@ -58,4 +64,10 @@ export const PLAYER_ANIM_FRAMES: Record<string, string[]> = {
     throwUnderarm:    sortedUrls(_throwUnderarm),
     hit:              sortedUrls(_hit),
     guard:            sortedUrls(_guard),
+    bowAim:           sortedUrls(_bowAim),
+    bowDraw:          sortedUrls(_bowDraw),
+    bowFire:          sortedUrls(_bowFire),
+    gunFire:          sortedUrls(_gunFire),
+    gunReload:        sortedUrls(_gunReload),
+    gunRunFire:       sortedUrls(_gunRunFire),
 };

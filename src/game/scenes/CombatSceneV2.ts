@@ -6,7 +6,7 @@ import {
     CombatScenePlayableCharacter,
 } from '../entities/CombatSceneCharacter';
 import { CombatRoundTurnOrderManager } from '../CombatRoundTurnOrderManager';
-import { QTEEventType, AttackDirection, CombatAction } from '../entities/CombatTypes';
+import { QTEEventType, AttackDirection, CombatAction, isChordStep, ScheduleEntryOverride } from '../entities/CombatTypes';
 import { ComboStackSystem } from '../../data/ComboStackSystem';
 import { WorldMod } from '../../data/WorldMods/WorldMod';
 import { ComboRule } from '../../data/ComboRule/ComboRule.ts';
@@ -22,7 +22,7 @@ import { CombatFeatureFlags } from '../combatFeatureFlags';
 import {calculateStepDamage} from "../../data/Combo.ts";
 import {ComboStep} from "../../data/ComboMod/ComboStep.ts";
 import {ComboMod} from "../../data/ComboMod/ComboMod.ts";
-import {DancerCombatSpecialAction} from "../entities/CombatTypes.ts";
+import {DancerCombatSpecialAction, TokenSpentRequirement} from "../entities/CombatTypes.ts";
 import {findBestComboFromTokens} from "../../data/AutoComboCalculator.ts";
 import type {SupportPassive} from "../../data/Creature/SupportPassive.ts";
 
@@ -42,11 +42,35 @@ const DIR_DISPLAY: Record<AttackDirection, string> = {
     [AttackDirection.RIGHT]: 'D',
 };
 
-interface ScheduledInput {
+interface ScheduledSubStep {
     expectedTimeMs: number
-    action:         CombatAction
+    expectedDir?:   AttackDirection    // tap or hold
+    expectedDirs?:  AttackDirection[]  // chord
+    holdMs?:        number             // hold duration; resolved on keyup
     resolved:       boolean
-    timed:          boolean
+    timedCorrect:   boolean
+    // for hold: tracks when the key was pressed (relative to sequenceStart)
+    holdPressedAt?: number
+}
+
+interface ScheduledSpecialStage {
+    subSteps:               ScheduledSubStep[]
+    animation:              string
+    damage:                 number
+    executionTimeMs:        number
+    resolved:               boolean
+    timed:                  boolean
+    playAnimationOnStageStart: boolean
+}
+
+interface ScheduledInput {
+    expectedTimeMs:  number   // first key time (drives UI display)
+    executionTimeMs: number   // when animation fires (= last sub-step for sequences)
+    action:          CombatAction
+    resolved:        boolean
+    timed:           boolean
+    subSteps?:       ScheduledSubStep[]
+    specialStages?:  ScheduledSpecialStage[]
 }
 
 const TOKENS_PER_TURN        = 4;
@@ -251,10 +275,20 @@ export class CombatSceneV2 extends Scene {
 
         const speed = CombatConfig.inputPhaseSpeed;
 
-        const schedule = this.buildInputSchedule(plannedActions, speed);
+        const schedule = this.buildInputSchedule(plannedActions, speed, mods);
 
         EventBus.emit(Events.COMBAT_V2_INPUT_PHASE_START, {
             hitTimesMs: schedule.map(e => e.expectedTimeMs),
+            nodeMeta:   schedule.map(e => {
+                if (!e.subSteps || e.subSteps.length === 0) return {};
+                if (e.subSteps.length === 1) {
+                    const s = e.subSteps[0];
+                    if (s.holdMs !== undefined) return { holdMs: s.holdMs };
+                    if (s.expectedDirs)         return { chordDirs: s.expectedDirs };
+                    return {};
+                }
+                return { seqStepHolds: e.subSteps.map(s => s.holdMs) };
+            }),
         });
 
         const sequenceStart = this.time.now;
@@ -269,16 +303,162 @@ export class CombatSceneV2 extends Scene {
         });
         const { inputEarlyWindow, inputLateWindow } = CombatConfig;
 
+        // Track keys currently held: dir -> time pressed (relative to sequenceStart)
+        const pressedKeys  = new Set<AttackDirection>();
+        const keyPressedAt = new Map<AttackDirection, number>();
+
+        const holdChargeIntervals = new Map<ScheduledSubStep, ReturnType<typeof setInterval>>();
+
+        const resolveSubStep = (step: ScheduledSubStep, correct: boolean) => {
+            const chargeInterval = holdChargeIntervals.get(step);
+            if (chargeInterval !== undefined) {
+                clearInterval(chargeInterval);
+                holdChargeIntervals.delete(step);
+            }
+            step.resolved     = true;
+            step.timedCorrect = correct;
+            if (correct) {
+                this.cameras.main.shake(350, 0.008);
+                EventBus.emit(Events.COMBAT_V2_TIMED_INPUT);
+            }
+        };
+
+        const startHoldCharge = (step: ScheduledSubStep) => {
+            if (holdChargeIntervals.has(step)) return;
+            const interval = setInterval(() => this.cameras.main.shake(80, 0.003), 100);
+            holdChargeIntervals.set(step, interval);
+        };
+
+        // Returns 'resolved' | 'pending' (window open, keep waiting) | 'skip' (out of window or not a chord)
+        const tryChordSubStep = (step: ScheduledSubStep, elapsed: number): 'resolved' | 'pending' | 'skip' => {
+            if (!step.expectedDirs) return 'skip';
+            const inWindow = elapsed >= step.expectedTimeMs - inputEarlyWindow &&
+                             elapsed <= step.expectedTimeMs + inputLateWindow;
+            if (!inWindow) return 'skip';
+            if (!step.expectedDirs.every(d => pressedKeys.has(d))) return 'pending';
+            resolveSubStep(step, true);
+            return 'resolved';
+        };
+
         const onKeyDown = (event: KeyboardEvent) => {
             const dir = WASD_MAP[event.key.toUpperCase()];
             if (dir === undefined) return;
             event.preventDefault();
 
             const elapsed = this.time.now - sequenceStart;
+
+            if (!pressedKeys.has(dir)) {
+                pressedKeys.add(dir);
+                keyPressedAt.set(dir, elapsed);
+            }
+
             for (const entry of schedule) {
-                if (!entry.resolved &&
-                    elapsed >= entry.expectedTimeMs - inputEarlyWindow &&
-                    elapsed <= entry.expectedTimeMs + inputLateWindow) {
+                if (entry.resolved) continue;
+
+                if (entry.specialStages) {
+                    const activeStage = entry.specialStages.find(s => !s.resolved);
+                    if (!activeStage) continue;
+
+                    const nextStep = activeStage.subSteps.find(s => !s.resolved);
+                    if (!nextStep) continue;
+
+                    if (nextStep.expectedDirs) {
+                        // Chord sub-step in special stage
+                        const chordResult = tryChordSubStep(nextStep, elapsed);
+                        if (chordResult === 'skip') continue;    // out of window — try next entry
+                        if (chordResult === 'pending') break;    // window open, waiting for more keys
+                        // 'resolved'
+                        if (activeStage.subSteps.every(s => s.resolved)) {
+                            activeStage.resolved = true;
+                            activeStage.timed    = activeStage.subSteps.every(s => s.timedCorrect);
+                            if (entry.specialStages.every(s => s.resolved)) {
+                                entry.resolved = true;
+                                entry.timed    = entry.specialStages.every(s => s.timed);
+                            }
+                        }
+                        break;
+                    }
+
+                    if (nextStep.holdMs !== undefined) {
+                        // Hold sub-step in special stage: record press, resolve on keyup
+                        const inWindow = elapsed >= nextStep.expectedTimeMs - inputEarlyWindow &&
+                                         elapsed <= nextStep.expectedTimeMs + inputLateWindow;
+                        if (inWindow && dir === nextStep.expectedDir && nextStep.holdPressedAt === undefined) {
+                            nextStep.holdPressedAt = elapsed;
+                            startHoldCharge(nextStep);
+                        }
+                        continue;
+                    }
+
+                    const inWindow = elapsed >= nextStep.expectedTimeMs - inputEarlyWindow &&
+                                     elapsed <= nextStep.expectedTimeMs + inputLateWindow;
+                    if (!inWindow) continue;
+
+                    nextStep.resolved     = true;
+                    nextStep.timedCorrect = (dir === nextStep.expectedDir);
+
+                    if (nextStep.timedCorrect) {
+                        this.cameras.main.shake(350, 0.008);
+                        EventBus.emit(Events.COMBAT_V2_TIMED_INPUT);
+                    }
+
+                    if (activeStage.subSteps.every(s => s.resolved)) {
+                        activeStage.resolved = true;
+                        activeStage.timed    = activeStage.subSteps.every(s => s.timedCorrect);
+                        if (entry.specialStages.every(s => s.resolved)) {
+                            entry.resolved = true;
+                            entry.timed    = entry.specialStages.every(s => s.timed);
+                        }
+                    }
+                    break;
+                } else if (entry.subSteps) {
+                    const nextStep = entry.subSteps.find(s => !s.resolved);
+                    if (!nextStep) continue;
+
+                    if (nextStep.expectedDirs) {
+                        // Chord sub-step
+                        const chordResult = tryChordSubStep(nextStep, elapsed);
+                        if (chordResult === 'skip') continue;    // out of window — try next entry
+                        if (chordResult === 'pending') break;    // window open, waiting for more keys
+                        // 'resolved'
+                        if (entry.subSteps.every(s => s.resolved)) {
+                            entry.resolved = true;
+                            entry.timed    = entry.subSteps.every(s => s.timedCorrect);
+                        }
+                        break;
+                    }
+
+                    if (nextStep.holdMs !== undefined) {
+                        // Hold sub-step: record press time, resolution deferred to keyup
+                        const inWindow = elapsed >= nextStep.expectedTimeMs - inputEarlyWindow &&
+                                         elapsed <= nextStep.expectedTimeMs + inputLateWindow;
+                        if (inWindow && dir === nextStep.expectedDir && nextStep.holdPressedAt === undefined) {
+                            nextStep.holdPressedAt = elapsed;
+                            startHoldCharge(nextStep);
+                        }
+                        continue;
+                    }
+
+                    const inWindow = elapsed >= nextStep.expectedTimeMs - inputEarlyWindow &&
+                                     elapsed <= nextStep.expectedTimeMs + inputLateWindow;
+                    if (!inWindow) continue;
+
+                    nextStep.resolved     = true;
+                    nextStep.timedCorrect = (dir === nextStep.expectedDir);
+
+                    if (entry.subSteps.every(s => s.resolved)) {
+                        entry.resolved = true;
+                        entry.timed    = entry.subSteps.every(s => s.timedCorrect);
+                        if (entry.timed) {
+                            this.cameras.main.shake(350, 0.008);
+                            EventBus.emit(Events.COMBAT_V2_TIMED_INPUT);
+                        }
+                    }
+                    break;
+                } else {
+                    const inWindow = elapsed >= entry.expectedTimeMs - inputEarlyWindow &&
+                                     elapsed <= entry.expectedTimeMs + inputLateWindow;
+                    if (!inWindow) continue;
                     entry.resolved = true;
                     entry.timed    = true;
                     this.cameras.main.shake(350, 0.008);
@@ -287,7 +467,58 @@ export class CombatSceneV2 extends Scene {
                 }
             }
         };
+
+        const onKeyUp = (event: KeyboardEvent) => {
+            const dir = WASD_MAP[event.key.toUpperCase()];
+            if (dir === undefined) return;
+
+            const elapsed = this.time.now - sequenceStart;
+            pressedKeys.delete(dir);
+            keyPressedAt.delete(dir);
+
+            const resolveHoldInSubSteps = (subSteps: ScheduledSubStep[]): boolean => {
+                const nextStep = subSteps.find(s => !s.resolved);
+                if (!nextStep || nextStep.expectedDir !== dir || nextStep.holdMs === undefined) return false;
+                if (nextStep.holdPressedAt === undefined) return false;
+
+                const heldFor = elapsed - nextStep.holdPressedAt;
+                resolveSubStep(nextStep, heldFor >= nextStep.holdMs * 0.75);
+                return true;
+            };
+
+            for (const entry of schedule) {
+                if (entry.resolved) continue;
+
+                if (entry.specialStages) {
+                    const activeStage = entry.specialStages.find(s => !s.resolved);
+                    if (!activeStage) continue;
+                    if (!resolveHoldInSubSteps(activeStage.subSteps)) continue;
+
+                    if (activeStage.subSteps.every(s => s.resolved)) {
+                        activeStage.resolved = true;
+                        activeStage.timed    = activeStage.subSteps.every(s => s.timedCorrect);
+                        if (entry.specialStages.every(s => s.resolved)) {
+                            entry.resolved = true;
+                            entry.timed    = entry.specialStages.every(s => s.timed);
+                        }
+                    }
+                    break;
+                }
+
+                const subSteps = entry.subSteps;
+                if (!subSteps) continue;
+                if (!resolveHoldInSubSteps(subSteps)) continue;
+
+                if (subSteps.every(s => s.resolved)) {
+                    entry.resolved = true;
+                    entry.timed    = subSteps.every(s => s.timedCorrect);
+                }
+                break;
+            }
+        };
+
         this.input.keyboard!.on('keydown', onKeyDown);
+        this.input.keyboard!.on('keyup',   onKeyUp);
 
         let ratingPool = this.comboHistory.length > 0
             ? this.comboHistory[this.comboHistory.length - 1].comboStack.comboRating
@@ -306,90 +537,266 @@ export class CombatSceneV2 extends Scene {
         for (const entry of schedule) {
             if (!target.isAlive) break;
 
-            const elapsed  = this.time.now - sequenceStart;
-            const waitLeft = entry.expectedTimeMs - elapsed;
-            if (waitLeft > 0) await this.delay(waitLeft);
-
-            if (!entry.resolved) {
-                entry.resolved = true;
-            }
-
             const action = entry.action;
+
             if (action instanceof DancerCombatSpecialAction) {
                 ratingPool = Math.max(0, ratingPool - action.ratingRequirement);
             }
 
             const prev = this.comboHistory[this.comboHistory.length - 1] ?? null;
-
             const step: ComboStep = {
                 action,
-                comboStack:                 new ComboStackSystem(ratingPool),
-                availableWorldMods:         this.worldMods,
-                availableComboMods:         mods,
-                availableComboRules:        this.comboRules,
-                availableCreaturePassives:  passives,
-                applicableWorldMods:         [],
-                applicableComboMods:         [],
-                applicableComboRules:        [],
-                applicableCreaturePassives:  [],
+                comboStack:                new ComboStackSystem(ratingPool),
+                availableWorldMods:        this.worldMods,
+                availableComboMods:        mods,
+                availableComboRules:       this.comboRules,
+                availableCreaturePassives: passives,
+                applicableWorldMods:       [],
+                applicableComboMods:       [],
+                applicableComboRules:      [],
+                applicableCreaturePassives:[],
                 activeEffects: prev ? new Map(prev.activeEffects) : new Map(),
                 newEffects:    [],
                 lostEffects:   [],
                 finalDamage:   0,
             };
-
             calculateStepDamage(step, this.comboHistory);
             ratingPool = step.comboStack.comboRating;
 
-            this.sceneRenderer.playPlayerAttack(actor, `player-${action.animation}-anim`);
+            if (entry.specialStages) {
+                // ── Multi-stage special: fire each stage when its time arrives ──
+                let totalDealt = 0;
+                for (const stage of entry.specialStages) {
+                    if (!target.isAlive) break;
 
-            const actualDamage = target.damage(step.finalDamage);
-            for (const effect of action.effects) effect.apply(target);
-            this.sceneRenderer.updateEnemyHpBars(this.enemies);
-            this.sceneRenderer.playEnemyHit(target);
-            this.sceneRenderer.showStepEffects(step, target);
+                    if (stage.playAnimationOnStageStart) {
+                        this.sceneRenderer.playPlayerAttack(actor, `player-${stage.animation}-anim`);
+                    }
 
-            target.syncEffects(step.activeEffects);
-            this.sceneRenderer.updateEnemyAirbornePositions(this.enemies);
+                    const elapsed  = this.time.now - sequenceStart;
+                    const waitLeft = stage.executionTimeMs - elapsed;
+                    if (waitLeft > 0) await this.delay(waitLeft);
 
-            EventBus.emit(Events.COMBAT_V2_PLAYER_ACTION_END, {
-                actor,
-                target,
-                action,
-                chainMult:     1,
-                actualDamage,
-                comboRating:   ratingPool,
-                atkMultiplier: step.comboStack.finalMultiplier,
-            });
+                    if (!stage.resolved) {
+                        for (const s of stage.subSteps) s.resolved = true;
+                        stage.resolved = true;
+                        stage.timed    = false;
+                    }
+
+                    if (!stage.playAnimationOnStageStart) {
+                        this.sceneRenderer.playPlayerAttack(actor, `player-${stage.animation}-anim`);
+                    }
+                    const dealt = target.damage(stage.damage);
+                    totalDealt += dealt;
+                    for (const effect of action.effects) effect.apply(target);
+                    this.sceneRenderer.updateEnemyHpBars(this.enemies);
+                    this.sceneRenderer.playEnemyHit(target);
+
+                    await this.delay(ACTION_SETTLE_MS / speed);
+                }
+
+                entry.resolved = true;
+                entry.timed    = entry.specialStages.every(s => s.timed);
+
+                this.sceneRenderer.showStepEffects(step, target);
+                target.syncEffects(step.activeEffects);
+                this.sceneRenderer.updateEnemyAirbornePositions(this.enemies);
+
+                EventBus.emit(Events.COMBAT_V2_PLAYER_ACTION_END, {
+                    actor,
+                    target,
+                    action,
+                    chainMult:     1,
+                    actualDamage:  totalDealt,
+                    comboRating:   ratingPool,
+                    atkMultiplier: step.comboStack.finalMultiplier,
+                });
+
+            } else {
+                // ── Single-animation action ────────────────────────────────────
+                const elapsed  = this.time.now - sequenceStart;
+                const waitLeft = entry.executionTimeMs - elapsed;
+                if (waitLeft > 0) await this.delay(waitLeft);
+
+                if (!entry.resolved) {
+                    if (entry.subSteps) {
+                        for (const s of entry.subSteps) s.resolved = true;
+                        entry.timed = false;
+                    }
+                    entry.resolved = true;
+                }
+
+                this.sceneRenderer.playPlayerAttack(actor, `player-${action.animation}-anim`);
+
+                const actualDamage = target.damage(step.finalDamage);
+                for (const effect of action.effects) effect.apply(target);
+                this.sceneRenderer.updateEnemyHpBars(this.enemies);
+                this.sceneRenderer.playEnemyHit(target);
+                this.sceneRenderer.showStepEffects(step, target);
+
+                target.syncEffects(step.activeEffects);
+                this.sceneRenderer.updateEnemyAirbornePositions(this.enemies);
+
+                EventBus.emit(Events.COMBAT_V2_PLAYER_ACTION_END, {
+                    actor,
+                    target,
+                    action,
+                    chainMult:     1,
+                    actualDamage,
+                    comboRating:   ratingPool,
+                    atkMultiplier: step.comboStack.finalMultiplier,
+                });
+
+                await this.delay(ACTION_SETTLE_MS / speed);
+            }
 
             this.comboHistory.push(step);
-            await this.delay(ACTION_SETTLE_MS / speed);
         }
 
         this.input.keyboard!.off('keydown', onKeyDown);
+        this.input.keyboard!.off('keyup',   onKeyUp);
+        for (const interval of holdChargeIntervals.values()) clearInterval(interval);
+        holdChargeIntervals.clear();
 
         const turnSteps = this.comboHistory.slice(turnStartIndex);
         for (const mod     of mods)     mod.onComboEnd(turnSteps);
         for (const wm      of this.worldMods) wm.onComboEnd(turnSteps);
         for (const passive of passives) passive.onComboEnd(turnSteps);
+
+        await this.delay(500);
+        if (actor.isAlive) actor.sprite?.play(actor.idleAnimKey);
     }
 
-    private buildInputSchedule(plannedActions: CombatAction[], speed: number): ScheduledInput[] {
+    private buildInputSchedule(plannedActions: CombatAction[], speed: number, mods: readonly ComboMod[] = []): ScheduledInput[] {
         const schedule: ScheduledInput[] = [];
         let t = INITIAL_INPUT_DELAY_MS / speed;
 
         for (let i = 0; i < plannedActions.length; i++) {
+            const action = plannedActions[i];
+
+            // ── Multi-stage special ───────────────────────────────────────────
+            if (action instanceof DancerCombatSpecialAction && action.stages) {
+                const specialStages: ScheduledSpecialStage[] = [];
+                let stageT = t;
+
+                for (const stage of action.stages) {
+                    const seqSteps = stage.input.inputSequenceSteps ?? [];
+                    const subSteps: ScheduledSubStep[] = [];
+                    let stepT = stageT;
+
+                    for (let j = 0; j < seqSteps.length; j++) {
+                        const s = seqSteps[j];
+                        stepT += s.waitMs / speed;
+                        if (isChordStep(s)) {
+                            subSteps.push({ expectedTimeMs: stepT, expectedDirs: s.keys, resolved: false, timedCorrect: false });
+                        } else {
+                            subSteps.push({ expectedTimeMs: stepT, expectedDir: s.key, holdMs: s.holdMs, resolved: false, timedCorrect: false });
+                        }
+                    }
+
+                    const lastSubStep = subSteps[subSteps.length - 1];
+                    const executionTimeMs = lastSubStep
+                        ? lastSubStep.expectedTimeMs + (lastSubStep.holdMs ?? 0) / speed
+                        : stageT;
+
+                    specialStages.push({
+                        subSteps,
+                        animation:               stage.animation,
+                        damage:                  stage.damage ?? action.damage,
+                        executionTimeMs,
+                        resolved:                false,
+                        timed:                   false,
+                        playAnimationOnStageStart: stage.playAnimationOnStageStart ?? false,
+                    });
+
+                    // Next stage's first input is spaced by this stage's last-key waitMs only
+                    stageT = executionTimeMs
+                        + (stage.input.waitTillNextInputDuration / speed);
+                }
+
+                const lastStage = specialStages[specialStages.length - 1];
+                schedule.push({
+                    expectedTimeMs:  t,
+                    executionTimeMs: lastStage?.executionTimeMs ?? t,
+                    action,
+                    resolved:       false,
+                    timed:          false,
+                    specialStages,
+                });
+
+                if (i < plannedActions.length - 1) {
+                    t = (lastStage?.executionTimeMs ?? t) + ACTION_SETTLE_MS / speed;
+                }
+                continue;
+            }
+
+            // ── Single-input / sequence action ────────────────────────────────
+            const inp     = action.input;
+            const seqSteps = inp?.inputSequenceSteps;
+            let executionTimeMs = t;
+            let subSteps: ScheduledSubStep[] | undefined;
+
+            if (seqSteps && seqSteps.length > 0) {
+                subSteps = [];
+                let stepT = t;
+                for (let j = 0; j < seqSteps.length; j++) {
+                    const s = seqSteps[j];
+                    stepT += s.waitMs / speed;
+                    if (isChordStep(s)) {
+                        subSteps.push({ expectedTimeMs: stepT, expectedDirs: s.keys, resolved: false, timedCorrect: false });
+                    } else {
+                        subSteps.push({ expectedTimeMs: stepT, expectedDir: s.key, holdMs: s.holdMs, resolved: false, timedCorrect: false });
+                    }
+                }
+                executionTimeMs = subSteps[subSteps.length - 1].expectedTimeMs;
+            } else if (inp?.inputHold) {
+                // Top-level hold: single sub-step with holdMs; action fires after hold completes
+                const h = inp.inputHold;
+                const stepT = t + inp.waitTillNextInputDuration / speed;
+                subSteps = [{ expectedTimeMs: stepT, expectedDir: h.direction, holdMs: h.durationMs, resolved: false, timedCorrect: false }];
+                executionTimeMs = stepT + h.durationMs / speed;
+            } else if (inp?.inputChord) {
+                // Top-level chord: single sub-step with expectedDirs
+                const stepT = t + inp.waitTillNextInputDuration / speed;
+                subSteps = [{ expectedTimeMs: stepT, expectedDirs: inp.inputChord, resolved: false, timedCorrect: false }];
+                executionTimeMs = stepT;
+            } else if (inp?.inputDirection !== null && inp?.inputDirection !== undefined) {
+                // Simple tap — let combo mods convert it to a hold
+                const override: ScheduleEntryOverride = mods.reduce<ScheduleEntryOverride>(
+                    (acc, mod) => ({ ...acc, ...mod.onBuildSchedule(action, i, plannedActions) }),
+                    {},
+                );
+                if (override.tapToHoldMs !== undefined) {
+                    subSteps = [{ expectedTimeMs: t, expectedDir: inp.inputDirection, holdMs: override.tapToHoldMs, resolved: false, timedCorrect: false }];
+                    executionTimeMs = t + override.tapToHoldMs / speed;
+                }
+            }
+
             schedule.push({
-                expectedTimeMs: t,
-                action:         plannedActions[i],
-                resolved:       false,
-                timed:          false,
+                expectedTimeMs:  t,
+                executionTimeMs,
+                action,
+                resolved: false,
+                timed:    false,
+                subSteps,
             });
+
             if (i < plannedActions.length - 1) {
-                t += ACTION_SETTLE_MS / speed;
-                t += (plannedActions[i].input?.waitTillNextInputDuration ?? 0) / speed;
+                t = executionTimeMs + ACTION_SETTLE_MS / speed;
+                t += (action.input?.waitTillNextInputDuration ?? 0) / speed;
             }
         }
+        console.log('[InputSchedule]', schedule.map(e => ({
+            action:         e.action.name,
+            expectedTimeMs: e.expectedTimeMs,
+            executionTimeMs: e.executionTimeMs,
+            subSteps:       e.subSteps?.map(s => ({ dir: s.expectedDir, expectedTimeMs: s.expectedTimeMs })),
+            specialStages:  e.specialStages?.map(st => ({
+                animation:      st.animation,
+                executionTimeMs: st.executionTimeMs,
+                subSteps:       st.subSteps.map(s => ({ dir: s.expectedDir, expectedTimeMs: s.expectedTimeMs })),
+            })),
+        })));
         return schedule;
     }
 
@@ -429,7 +836,11 @@ export class CombatSceneV2 extends Scene {
             previewTokens, actor.actionDeck, mods, this.worldMods, this.comboRules, passives,
         );
 
-        EventBus.emit(Events.COMBAT_V2_PLANNER_START, { maxSteps, tokenCounts: { ...tokenCounts } });
+        EventBus.emit(Events.COMBAT_V2_PLANNER_START, {
+            maxSteps,
+            tokenCounts:        { ...tokenCounts },
+            initialTokenCounts: { ...initialTokenCounts },
+        });
         EventBus.emit(Events.COMBAT_V2_PLANNER_STAGE, { stage: 'planning' });
 
         // ── Step appliers ─────────────────────────────────────────────────────
@@ -507,6 +918,11 @@ export class CombatSceneV2 extends Scene {
             const onSpecialSelected = ({ index }: { index: number }) => {
                 const sp = actor.actionDeck.getAllSpecials()[index];
                 if (!sp) return;
+                if (
+                    sp instanceof DancerCombatSpecialAction &&
+                    sp.tokenSpentRequirement &&
+                    !this.meetsTokenSpentRequirement(sp.tokenSpentRequirement, tokenCounts, initialTokenCounts)
+                ) return;
                 addSpecialStep(sp);
             };
 
@@ -528,6 +944,24 @@ export class CombatSceneV2 extends Scene {
             EventBus.on(Events.COMBAT_V2_AUTO_COMBO_REQUEST,      applyAutoCombo);
             EventBus.on(Events.COMBAT_V2_PLANNER_CONFIRM_REQUEST, finish);
         });
+    }
+
+    private meetsTokenSpentRequirement(
+        req:                TokenSpentRequirement,
+        tokenCounts:        Record<AttackDirection, number>,
+        initialTokenCounts: Record<AttackDirection, number>,
+    ): boolean {
+        const dirs = [AttackDirection.UP, AttackDirection.DOWN, AttackDirection.LEFT, AttackDirection.RIGHT];
+        if (req.mode === 'any') {
+            const totalSpent = dirs.reduce((sum, d) => sum + Math.max(0, initialTokenCounts[d] - tokenCounts[d]), 0);
+            return totalSpent >= req.total;
+        }
+        for (const [dirStr, required] of Object.entries(req.perDir)) {
+            const dir   = Number(dirStr) as AttackDirection;
+            const spent = Math.max(0, initialTokenCounts[dir] - tokenCounts[dir]);
+            if (spent < (required ?? 0)) return false;
+        }
+        return true;
     }
 
     private generateTokens(): AttackDirection[] {
@@ -571,13 +1005,37 @@ export class CombatSceneV2 extends Scene {
         simulatedHistory.push(step);
 
         const input = action.input;
-        const displayKey = input?.inputDirection != null
-            ? DIR_DISPLAY[input.inputDirection]
-            : input?.inputSequence != null
-                ? input.inputSequence.map(d => DIR_DISPLAY[d]).join('')
-                : input?.inputSpecialKey != null
-                    ? String(input.inputSpecialKey)
-                    : '?';
+        const speed = CombatConfig.inputPhaseSpeed;
+
+        const seqStepDisplay = (s: import('../entities/CombatTypes').SequenceStep): string =>
+            isChordStep(s) ? s.keys.map(d => DIR_DISPLAY[d]).join('+')
+                           : DIR_DISPLAY[s.key] + (s.holdMs ? `(${s.holdMs}ms)` : '');
+
+        const stageSequences = action instanceof DancerCombatSpecialAction && action.stages
+            ? action.stages.map(stage => ({
+                animation:  stage.animation,
+                steps: (stage.input.inputSequenceSteps ?? []).map(s => ({
+                    dir:    isChordStep(s) ? s.keys[0] : s.key,
+                    waitMs: s.waitMs / speed,
+                    label:  seqStepDisplay(s),
+                    holdMs: isChordStep(s) ? undefined : s.holdMs,
+                })),
+            }))
+            : undefined;
+
+        const displayKey = stageSequences
+            ? stageSequences.map(s => s.steps.map(k => k.label).join('')).join(' → ')
+            : input?.inputDirection != null
+                ? DIR_DISPLAY[input.inputDirection]
+                : input?.inputHold != null
+                    ? `[${DIR_DISPLAY[input.inputHold.direction]}](${input.inputHold.durationMs}ms)`
+                    : input?.inputChord != null
+                        ? input.inputChord.map(d => DIR_DISPLAY[d]).join('+')
+                        : input?.inputSequenceSteps != null
+                            ? input.inputSequenceSteps.map(seqStepDisplay).join('')
+                            : input?.inputSpecialKey != null
+                                ? String(input.inputSpecialKey)
+                                : '?';
 
         EventBus.emit(Events.COMBAT_V2_PLANNER_ACTION, {
             action,
@@ -585,9 +1043,14 @@ export class CombatSceneV2 extends Scene {
             simulatedDamage: step.finalDamage,
             comboRating:     step.comboStack.comboRating,
             atkMultiplier:   step.comboStack.finalMultiplier,
-            waitMs:          (input?.waitTillNextInputDuration ?? 0) / CombatConfig.inputPhaseSpeed,
+            waitMs:          (input?.waitTillNextInputDuration ?? 0) / speed,
             tokenCounts:     tokenCounts ? { ...tokenCounts } : undefined,
-            sequenceSteps:   input?.inputSequenceSteps?.map(s => ({ dir: s.key, waitMs: s.waitMs / CombatConfig.inputPhaseSpeed })),
+            sequenceSteps:   input?.inputSequenceSteps?.map(s => ({
+                dir:    isChordStep(s) ? s.keys[0] : s.key,
+                waitMs: s.waitMs / speed,
+                label:  seqStepDisplay(s),
+            })),
+            stageSequences,
         });
 
         return step.comboStack.comboRating;
@@ -687,7 +1150,7 @@ export class CombatSceneV2 extends Scene {
 
         EventBus.emit(Events.COMBAT_V2_COUNTER_ATTACK, { attacker, counterTarget });
 
-        const dealt = counterTarget.damage(30);
+        const dealt = counterTarget.damage(5);
         this.sceneRenderer.updateEnemyHpBars(this.enemies);
 
         counterTarget.sprite?.clearTint();

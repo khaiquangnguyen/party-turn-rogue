@@ -365,11 +365,6 @@ export class CombatSceneRenderer {
 
     playPlayerAttack(actor: CombatScenePlayableCharacter, animKey: string): void {
         actor.sprite?.play(animKey);
-        actor.sprite?.once('animationcomplete', () => {
-            this.scene.time.delayedCall(IDLE_RETURN_MS, () => {
-                actor.sprite?.play('player-idle-anim');
-            });
-        });
     }
 
     playEnemyHit(target: CombatSceneEnemyCharacter): void {

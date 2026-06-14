@@ -55,7 +55,7 @@ function pickRandom<T>(pool: T[], n: number): T[] {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const REQUIRED_MODS = 1;
-const MAX_SPECIALS  = 50;
+const MAX_SPECIALS  = 4;
 
 const DIR_ARROW: Record<AttackDirection, string> = {
     [AttackDirection.UP]:    '↑',

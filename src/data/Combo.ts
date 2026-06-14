@@ -10,10 +10,16 @@ export function calculateStepDamage(step: ComboStep, history: readonly ComboStep
     step.applicableWorldMods        = [];
     step.applicableCreaturePassives = [];
 
+    // Returns how many times mod has fired: prior steps + already added this step.
+    const modAppliedCount = (mod: (typeof step.availableComboMods)[number]) =>
+        history.filter(s => s.applicableComboMods.includes(mod)).length
+        + (step.applicableComboMods.includes(mod) ? 1 : 0);
+
     for (const rule of step.availableComboRules) {
         if (rule.onBeforeAction(step, history)) step.applicableComboRules.push(rule);
     }
     for (const mod of step.availableComboMods) {
+        if (modAppliedCount(mod) >= mod.applicableLimit) continue;
         if (mod.onBeforeAction(step, history)) step.applicableComboMods.push(mod);
     }
     for (const wm of step.availableWorldMods) {
@@ -26,6 +32,7 @@ export function calculateStepDamage(step: ComboStep, history: readonly ComboStep
     step.finalDamage = Math.ceil(step.action.damage * step.comboStack.finalMultiplier + step.comboStack.extraDamage);
 
     for (const mod of step.availableComboMods) {
+        if (modAppliedCount(mod) >= mod.applicableLimit) continue;
         if (mod.onAfterAction(step, history) && !step.applicableComboMods.includes(mod)) step.applicableComboMods.push(mod);
     }
     for (const wm of step.availableWorldMods) {

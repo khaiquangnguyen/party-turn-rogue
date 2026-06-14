@@ -13,6 +13,13 @@ export enum AttackDirection {
     RIGHT = 3,
 }
 
+// Tokens-spent-this-turn gate on special actions.
+// 'any'         — total tokens spent (any direction) must reach `total`.
+// 'directional' — each direction in `perDir` must have that many tokens spent.
+export type TokenSpentRequirement =
+    | { mode: 'any';         total:  number }
+    | { mode: 'directional'; perDir: Partial<Record<AttackDirection, number>> };
+
 // ── Combat effect ─────────────────────────────────────────────────────────────
 
 export abstract class CombatEffect {
@@ -29,23 +36,36 @@ export interface ICombatTarget {
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 
-export type SequenceStep = { key: AttackDirection; waitMs: number };
+export type TapStep   = { key: AttackDirection;   waitMs: number; holdMs?: number };
+export type ChordStep = { keys: AttackDirection[]; waitMs: number };
+export type SequenceStep = TapStep | ChordStep;
+
+export function isChordStep(s: SequenceStep): s is ChordStep { return 'keys' in s; }
+
+export interface SpecialStage {
+    input:                   CombatActionInput;
+    animation:               string;
+    damage?:                 number;
+    playAnimationOnStageStart?: boolean;
+}
 
 export type ActionInputKey =
     | { type: 'direction'; direction: AttackDirection }
     | { type: 'special';   key: 1 | 2 | 3 | 4 }
-    | { type: 'sequence';  steps: SequenceStep[] };
+    | { type: 'sequence';  steps: SequenceStep[] }
+    | { type: 'hold';      direction: AttackDirection; durationMs: number }
+    | { type: 'chord';     directions: AttackDirection[] };
 
 export class CombatActionInput {
     readonly waitTillNextInputDuration: number;
     private readonly _spec: ActionInputKey;
 
     // Direction / special-key form:  new CombatActionInput(waitMs, direction | inputKey)
-    // Sequence form:                 new CombatActionInput(steps)  — last step's waitMs is used as the post-action gap
+    // Sequence form:                 new CombatActionInput(steps)  — each step's waitMs is the delay before that key
     constructor(waitOrSteps: number | SequenceStep[], input?: AttackDirection | ActionInputKey) {
         if (Array.isArray(waitOrSteps)) {
             this._spec = { type: 'sequence', steps: waitOrSteps };
-            this.waitTillNextInputDuration = waitOrSteps[waitOrSteps.length - 1]?.waitMs ?? 0;
+            this.waitTillNextInputDuration = 0;
         } else {
             this.waitTillNextInputDuration = waitOrSteps;
             this._spec = typeof input === 'number'
@@ -58,19 +78,36 @@ export class CombatActionInput {
         return this._spec.type === 'direction' ? this._spec.direction : null;
     }
 
+    get inputHold(): { direction: AttackDirection; durationMs: number } | null {
+        return this._spec.type === 'hold' ? this._spec : null;
+    }
+
+    get inputChord(): AttackDirection[] | null {
+        return this._spec.type === 'chord' ? this._spec.directions : null;
+    }
+
     get inputSpecialKey(): (1 | 2 | 3 | 4) | null {
         return this._spec.type === 'special' ? this._spec.key : null;
     }
 
-    // Keys only — used for sequence matching (findBySequence / hasPartialSequence)
+    // Keys only for tap-only sequences; null if sequence contains chord steps
     get inputSequence(): AttackDirection[] | null {
-        return this._spec.type === 'sequence' ? this._spec.steps.map(s => s.key) : null;
+        if (this._spec.type !== 'sequence') return null;
+        if (this._spec.steps.some(isChordStep)) return null;
+        return (this._spec.steps as TapStep[]).map(s => s.key);
     }
 
     // Full steps with per-key wait durations
     get inputSequenceSteps(): SequenceStep[] | null {
         return this._spec.type === 'sequence' ? this._spec.steps : null;
     }
+}
+
+// ── Schedule overrides (set by combo mods at build time) ──────────────────────
+
+export interface ScheduleEntryOverride {
+    /** Convert a simple direction tap into a hold requiring this many ms */
+    tapToHoldMs?: number;
 }
 
 // ── Hit / QTE types ───────────────────────────────────────────────────────────
@@ -207,11 +244,27 @@ export class DancerCombatAction extends CombatAction {
     }
 }
 
-export class DancerCombatSpecialAction extends DancerCombatAction {
-    readonly ratingRequirement: number;
+export type DancerSpecialActionConfig = Omit<DancerActionConfig, 'animation' | 'energyCost'> & {
+    animation?:              string;
+    stages?:                 SpecialStage[];
+    ratingRequirement?:      number;
+    tokenSpentRequirement?:  TokenSpentRequirement;
+};
 
-    constructor(config: Omit<DancerActionConfig, 'energyCost'>) {
-        super({ ...config, energyCost: 0 });
-        this.ratingRequirement = config.ratingRequirement ?? 0;
+export class DancerCombatSpecialAction extends DancerCombatAction {
+    readonly ratingRequirement:     number;
+    readonly tokenSpentRequirement: TokenSpentRequirement | null;
+    readonly stages:                SpecialStage[] | null;
+
+    constructor(config: DancerSpecialActionConfig) {
+        super({
+            ...config,
+            animation:  config.animation ?? config.stages?.[0]?.animation ?? '',
+            damage:     config.damage    ?? config.stages?.[0]?.damage,
+            energyCost: 0,
+        });
+        this.ratingRequirement     = config.ratingRequirement     ?? 0;
+        this.tokenSpentRequirement = config.tokenSpentRequirement ?? null;
+        this.stages                = config.stages                ?? null;
     }
 }

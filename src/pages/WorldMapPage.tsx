@@ -41,24 +41,24 @@ export default function WorldMapPage() {
     }
 
     return (
-        <div className="relative w-screen h-screen bg-gray-900 overflow-hidden select-none">
+        <div className="relative w-screen h-screen bg-white overflow-hidden select-none">
 
             {/* Subtle grid texture */}
             <div
-                className="absolute inset-0 opacity-5"
+                className="absolute inset-0 opacity-[0.04]"
                 style={{
                     backgroundImage:
-                        'repeating-linear-gradient(0deg,#fff 0,#fff 1px,transparent 1px,transparent 48px),' +
-                        'repeating-linear-gradient(90deg,#fff 0,#fff 1px,transparent 1px,transparent 48px)',
+                        'repeating-linear-gradient(0deg,#000 0,#000 1px,transparent 1px,transparent 48px),' +
+                        'repeating-linear-gradient(90deg,#000 0,#000 1px,transparent 1px,transparent 48px)',
                 }}
             />
 
             {/* Header */}
             <div className="absolute top-0 left-0 right-0 pt-8 flex flex-col items-center gap-1 pointer-events-none">
-                <h1 className="text-xs font-bold uppercase tracking-widest text-amber-500">
+                <h1 className="text-2xl font-bold uppercase tracking-widest text-amber-500">
                     World Map
                 </h1>
-                <p className="text-xs text-gray-600 tracking-widest uppercase">
+                <p className="text-base text-gray-400 tracking-widest uppercase">
                     ← → select &nbsp;·&nbsp; Enter embark
                 </p>
             </div>
@@ -76,7 +76,7 @@ export default function WorldMapPage() {
                             left:      `${x}%`,
                             top:       `${y}%`,
                             transform: 'translate(-50%, -50%)',
-                            width:     '180px',
+                            width:     '280px',
                         }}
                         onClick={() => setSelected(i)}
                         onDoubleClick={() => embark(exp)}
@@ -84,32 +84,32 @@ export default function WorldMapPage() {
                     >
                         {/* Connector dot */}
                         <div
-                            className={`absolute left-1/2 -translate-x-1/2 -bottom-3 w-2 h-2 rounded-full transition-colors duration-200 ${
-                                active ? 'bg-amber-500' : 'bg-gray-700'
+                            className={`absolute left-1/2 -translate-x-1/2 -bottom-3 w-3 h-3 rounded-full transition-colors duration-200 ${
+                                active ? 'bg-amber-500' : 'bg-gray-300'
                             }`}
                         />
 
                         <div
-                            className={`rounded-lg p-4 border transition-all duration-200 ${
+                            className={`rounded-xl p-5 border-2 transition-all duration-200 ${
                                 active
-                                    ? 'border-amber-500 bg-gray-800 shadow-lg shadow-amber-500/20 scale-105'
-                                    : 'border-gray-700 bg-gray-800/50 opacity-50'
+                                    ? 'border-amber-500 bg-white shadow-xl shadow-amber-500/20 scale-105'
+                                    : 'border-gray-200 bg-white/70 opacity-50'
                             }`}
                         >
-                            <p className="text-sm font-bold text-gray-100 mb-1 leading-tight">
+                            <p className="text-xl font-bold text-gray-900 mb-1.5 leading-tight">
                                 {exp.region.title}
                             </p>
-                            <p className="text-xs text-gray-500 leading-snug mb-3">
+                            <p className="text-base text-gray-500 leading-snug mb-4">
                                 {exp.region.description}
                             </p>
 
-                            <div className="flex flex-col gap-2">
+                            <div className="flex flex-col gap-2.5">
                                 {exp.worldMods.map((mod, j) => (
                                     <div key={j}>
-                                        <p className="text-xs font-semibold text-amber-400">
+                                        <p className="text-base font-semibold text-amber-500">
                                             {mod.title}
                                         </p>
-                                        <p className="text-xs text-gray-500 leading-snug">
+                                        <p className="text-sm text-gray-500 leading-snug">
                                             {mod.description}
                                         </p>
                                     </div>
@@ -124,7 +124,7 @@ export default function WorldMapPage() {
             <div className="absolute bottom-8 left-0 right-0 flex justify-center">
                 <button
                     onClick={() => embark(expeditions[selected])}
-                    className="px-10 py-3 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-white font-bold uppercase tracking-widest rounded-lg transition-colors shadow"
+                    className="px-12 py-4 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-white text-xl font-bold uppercase tracking-widest rounded-xl transition-colors shadow-lg"
                 >
                     Embark →
                 </button>
